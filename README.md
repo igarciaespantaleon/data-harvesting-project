@@ -1,2 +1,3 @@
 # data-harvesting-project
-Repository for the group project of the course on Data Harvesting
+For this project we will scrape a few webpages to gain some insight on the Indian
+residential school system of Canada.
