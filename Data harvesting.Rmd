@@ -1,0 +1,456 @@
+---
+title: "Data Harvesting"
+author: "Rocío Galeote"
+date: "2025-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+rm(list=ls()) 
+
+library(scrapex)
+library(rvest)
+library(httr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+
+```{r}
+
+# Define the URL (test with first page)
+url <- "https://nctr.ca/residential-schools/"
+
+# Read the page
+page <- read_html(url)
+
+# Extract school names
+school_names <- page %>%
+  html_nodes("h2.text-xl a") %>%  # Targeting <h2> with class "text-xl", then <a>
+  html_text(trim = TRUE)
+
+# Extract school links
+school_links <- page %>%
+  html_nodes("h2.text-xl a") %>% 
+  html_attr("href")
+
+# Extract school details (location and years)
+school_details <- page %>%
+  html_nodes("p.text-sm.text-gray-500") %>%  # Select <p> with class "text-sm text-gray-500"
+  html_text(trim = TRUE)
+
+# Combine into a data frame
+school_data <- tibble(
+  school_name = school_names,
+  school_link = school_links,
+  details = school_details
+)
+
+# Print the results
+print(school_data)
+
+
+```
+
+```{r}
+
+# Base URLs
+base_url <- "https://nctr.ca/residential-schools/"
+paged_url <- "https://nctr.ca/residential-schools/page/"
+
+# Function to scrape a single page
+scrape_school_page <- function(page_num) {
+  # Handle first page differently
+  url <- ifelse(page_num == 1, base_url, paste0(paged_url, page_num, "/"))
+  
+  # Read the page
+  page <- tryCatch({
+    read_html(url)
+  }, error = function(e) {
+    message("Error fetching page: ", url)
+    return(NULL)
+  })
+  
+  if (is.null(page)) return(tibble(school_name = NA, school_link = NA, details = NA))
+  
+  # Extract school names
+  school_names <- page %>%
+    html_nodes("h2.text-xl a") %>%  
+    html_text(trim = TRUE)
+  
+  # Extract school links
+  school_links <- page %>%
+    html_nodes("h2.text-xl a") %>% 
+    html_attr("href")
+
+  # Extract school details (location and years)
+  school_details <- page %>%
+    html_nodes("p.text-sm.text-gray-500") %>%  
+    html_text(trim = TRUE)
+  
+  tibble(
+    school_name = school_names,
+    school_link = school_links,
+    details = school_details
+  )
+}
+
+# Scrape all pages (1 to 15)
+all_schools <- map_dfr(1:15, scrape_school_page)
+
+# View the final data
+print(all_schools)
+
+# Save to CSV
+write.csv(all_schools, "residential_schools.csv", row.names = FALSE)
+
+```
+
+
+Now we have the school name, the link to each school and the state and years of operation of each of them. But we also want to know the religious affiliation and the table of deceased students (if they have the info):
+
+```{r}
+
+library(rvest)
+library(tidyverse)
+library(httr)
+
+# Define a single school URL for testing
+schooltest_url <- "https://nctr.ca/residential-schools/alberta/whitefish-lake-st-andrews/"
+
+# Read the page
+page <- tryCatch({
+  read_html(schooltest_url)
+}, error = function(e) {
+  message("Error fetching page: ", schooltest_url)
+  return(NULL)
+})
+
+if (!is.null(page)) {
+  # Extract Religious Entity
+  religious_entity <- page %>%
+    html_nodes("p.max-w-2xl span.font-normal") %>% 
+    html_text(trim = TRUE)
+  
+  # Extract Student Memorial Table
+  table_node <- page %>% html_nodes("figure.wp-block-table table")
+
+  if (length(table_node) > 0) {
+    table_data <- table_node %>% 
+      html_table(fill = TRUE) %>% 
+      .[[1]]  # Extract first table if multiple exist
+  } else {
+    table_data <- tibble(Name = NA, Date_of_Death = NA)  # Placeholder if no table
+  }
+
+  # Print results
+  print(glue::glue("Religious Entity: {religious_entity}"))
+  print(table_data)
+}
+
+```
+
+
+Now with all
+
+```{r}
+library(rvest)
+library(tidyverse)
+library(httr)
+
+# Function to scrape a single school's details using its link
+
+scrape_school_details <- function(school_link) {
+  # Ensure the full URL is formed correctly
+  full_url <- ifelse(grepl("^https?://", school_link), school_link, paste0("https://nctr.ca", school_link))
+  
+  # Read the page
+  page <- tryCatch({
+    read_html(full_url)
+  }, error = function(e) {
+    message("Error fetching page: ", full_url)
+    return(NULL)
+  })
+  
+  if (is.null(page)) return(tibble(school_link = school_link, religious_entity = NA, student_data = NA))
+  
+  # Extract Religious Entity
+  religious_entity <- page %>%
+    html_nodes("p.max-w-2xl span.font-normal") %>%
+    html_text(trim = TRUE)
+  
+  # Extract Student Memorial Table
+  table_node <- page %>% html_nodes("figure.wp-block-table table")
+  
+  if (length(table_node) > 0) {
+    table_data <- table_node %>% 
+      html_table(fill = TRUE) %>% 
+      .[[1]]  # Extract first table if multiple exist
+  } else {
+    table_data <- tibble(Name = NA, Date_of_Death = NA)  # Placeholder if no table
+  }
+  
+  tibble(
+    school_link = school_link,
+    religious_entity = ifelse(length(religious_entity) > 0, religious_entity, NA),
+    student_data = list(table_data)  # Store tables in a list-column
+  )
+}
+
+# Apply the scraping function to all school links from `all_schools`
+detailed_school_data <- map_dfr(all_schools$school_link, scrape_school_details)
+
+# View the results
+print(detailed_school_data)
+
+```
+
+We join them by school_link
+
+```{r}
+# Ensure dplyr is loaded
+library(dplyr)
+
+# Join the two dataframes by the `school_link` column
+combined_data <- left_join(all_schools, detailed_school_data, by = "school_link")
+
+# View the combined data
+print(combined_data)
+
+```
+
+I want to separate the details of each school into: school type, location and years_operation, and then remove the original column
+
+```{r}
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract School Type (before " - ")
+    school_type = str_extract(details, "^[^ -]+"),
+
+    # Extract Location (between " - " and the year in parentheses)
+    location = str_extract(details, "(?<= - ).*(?= \\()"),
+
+    # Extract Years of Operation (in parentheses)
+    years_operation = str_extract(details, "\\(.*\\)")
+  ) %>%
+  # Remove the original 'details' column
+  select(-details)
+
+# View the updated combined data with the new columns
+print(combined_data)
+```
+
+
+We need to clean the years_operation column, there is duplicate data. Also, there are weird spaces within the numbers and we need to standardize them. We chose to remove the parentheses too:
+
+```{r}
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract only the last set of parentheses with years
+    years_operation = str_extract(years_operation, "\\([^()]*\\)$") %>%
+      str_replace_all("[()]", "") %>%  # Remove parentheses
+      str_trim() %>%  # Remove any leading or trailing spaces
+      str_replace_all("\\s*[–—-]\\s*", "-")  # Standardize dashes to "-"
+  )
+
+# View the cleaned data
+print(combined_data)
+```
+
+
+We're interested in seeing how many years each school was operating, so we extract the years from the column year_operation, we set them as numeric and we compute the substraction:
+
+```{r}
+
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract the first and last year as numeric values
+    start_year = as.numeric(str_extract(years_operation, "^\\d{4}")),
+    end_year = as.numeric(str_extract(years_operation, "\\d{4}$")),
+    
+    # Calculate years in operation (if both values exist)
+    years_active = ifelse(!is.na(start_year) & !is.na(end_year),
+                          end_year - start_year,
+                          NA)
+  ) %>%
+
+
+# View the cleaned data
+print(combined_data)
+
+```
+
+
+Then we use Selenium to scrape the location of each school from the memorial map
+
+```{r}
+library(RSelenium)
+library(wdman)
+
+# Start WebDriver
+eD <- rsDriver(
+  browser = "chrome",
+  port = 4567L,
+  chromever= "132.0.6834.197")
+
+remDr <- eD$client  # Create remote driver instance
+
+# Open the NCTR archival map page
+remDr$open()
+remDr$navigate("https://nctr.ca/records/view-your-records/archival-map/")
+Sys.sleep(10)  # Wait for map to load
+
+# Find all school markers (image elements inside the SVG)
+markers <- remDr$findElements(using = "css selector", "g[data-geometry-type='point'] image")
+
+# Initialize storage for results
+school_data <- data.frame(Name = character(), Longitude = numeric(), Latitude = numeric(), stringsAsFactors = FALSE)
+
+# Loop through each marker
+for (i in seq_along(markers)) {
+  # Click the marker
+  markers[[i]]$click()
+  Sys.sleep(2)  # Wait for popup to appear
+  
+  # Extract popup text
+  popup_text <- remDr$findElement(using = "css selector", "div.leaflet-popup-content")$getElementText()
+  
+  # Extract School Name
+  school_name <- str_extract(popup_text, "^[^\n]+")  # First line is usually the name
+  
+  # Extract Longitude and Latitude
+  longitude <- as.numeric(str_extract(popup_text, "Longitude: (-?\\d+\\.\\d+)"))
+  latitude <- as.numeric(str_extract(popup_text, "Latitude: (-?\\d+\\.\\d+)"))
+
+  # Handle multi-page popups (if coordinates are missing)
+  next_button <- tryCatch(
+    remDr$findElement(using = "css selector", "a.leaflet-popup-close-button"),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(next_button)) {
+    next_button$click()
+    Sys.sleep(2)  # Wait for new content
+
+    # Try extracting Longitude and Latitude again
+    popup_text <- remDr$findElement(using = "css selector", "div.leaflet-popup-content")$getElementText()
+    if (is.na(longitude)) longitude <- as.numeric(str_extract(popup_text, "Longitude: (-?\\d+\\.\\d+)"))
+    if (is.na(latitude)) latitude <- as.numeric(str_extract(popup_text, "Latitude: (-?\\d+\\.\\d+)"))
+  }
+  
+  # Store extracted data
+  school_data <- rbind(school_data, data.frame(Name = school_name, Longitude = longitude, Latitude = latitude, stringsAsFactors = FALSE))
+
+  # Close popup before moving to the next marker
+  remDr$findElement(using = "css selector", "a.leaflet-popup-close-button")$click()
+  Sys.sleep(1)
+}
+
+# Save results
+write.csv(school_data, "school_coordinates.csv", row.names = FALSE)
+
+# Close Selenium session
+remDr$close()
+rD$server$stop()
+
+
+```
+
+
+
+```{r}
+# Load required libraries
+
+library(selenider)
+
+# Start Chrome browser session
+browser <- run_selenium("chrome")
+
+# Navigate to the archival map
+browser %>% go("https://nctr.ca/records/view-your-records/archival-map/")
+
+# Wait for the map to load
+Sys.sleep(5)
+
+# Find all map markers (adjust selector if needed)
+markers <- browser %>% find_elements("g[data-geometry-type='point']")  
+
+# Iterate over each marker
+results <- list()
+
+for (i in seq_along(markers)) {
+  
+  # Click the marker
+  markers[[i]] %>% click()
+  Sys.sleep(2)  # Wait for popup
+  
+  # Extract the popup title
+  title <- browser %>% find_element(".title") %>% get_text()
+  
+  # Check if it contains "Residential"
+  if (grepl("Residential", title, ignore.case = TRUE)) {
+    
+    lat <- NA
+    lon <- NA
+    
+    # Keep clicking "arrow" button to find coordinates
+    for (j in 1:3) {  # Limit attempts to 3 clicks
+      
+      # Try extracting latitude and longitude
+      lat_element <- try(browser %>% find_element("div:contains('Latitude') span") %>% get_text(), silent = TRUE)
+      lon_element <- try(browser %>% find_element("div:contains('Longitude') span") %>% get_text(), silent = TRUE)
+      
+      # If values found, store and exit loop
+      if (!inherits(lat_element, "try-error") & !inherits(lon_element, "try-error")) {
+        lat <- lat_element
+        lon <- lon_element
+        break
+      }
+      
+      # Click arrow button to check next page
+      arrow_button <- try(browser %>% find_element(".titleButton.arrow"), silent = TRUE)
+      if (!inherits(arrow_button, "try-error")) {
+        arrow_button %>% click()
+        Sys.sleep(2)  # Wait for new content
+      }
+    }
+    
+    # Save results
+    results[[length(results) + 1]] <- data.frame(School = title, Latitude = lat, Longitude = lon)
+  }
+}
+
+# Convert results list to data frame
+school_coordinates <- do.call(rbind, results)
+
+# Print results
+print(school_coordinates)
+
+# Close browser
+browser %>% stop_selenium()
+
+```
+
