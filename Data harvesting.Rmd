@@ -1,0 +1,757 @@
+---
+title: "Data Harvesting"
+author: "Rocío Galeote"
+date: "2025-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## First part: shools list
+
+We are going to scrape the list of Residential Schools from the NCTR archive web. We need the school name, the years it was open, the location (Town, State) and the link to their individual page. 
+
+```{r}
+rm(list=ls()) 
+
+library(scrapex)
+library(rvest)
+library(httr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+
+```{r}
+
+# Define the URL (test with first page)
+url <- "https://nctr.ca/residential-schools/"
+
+# Read the page
+page <- read_html(url)
+
+# Extract school names
+school_names <- page %>%
+  html_nodes("h2.text-xl a") %>%  # Targeting <h2> with class "text-xl", then <a>
+  html_text(trim = TRUE)
+
+# Extract school links
+school_links <- page %>%
+  html_nodes("h2.text-xl a") %>% 
+  html_attr("href")
+
+# Extract school details (location and years)
+school_details <- page %>%
+  html_nodes("p.text-sm.text-gray-500") %>%  # Select <p> with class "text-sm text-gray-500"
+  html_text(trim = TRUE)
+
+# Combine into a data frame
+school_data <- tibble(
+  school_name = school_names,
+  school_link = school_links,
+  details = school_details
+)
+
+# Print the results
+print(school_data)
+
+
+```
+
+```{r}
+
+# Base URLs
+base_url <- "https://nctr.ca/residential-schools/"
+paged_url <- "https://nctr.ca/residential-schools/page/"
+
+# Function to scrape a single page
+scrape_school_page <- function(page_num) {
+  # Handle first page differently
+  url <- ifelse(page_num == 1, base_url, paste0(paged_url, page_num, "/"))
+  
+  # Read the page
+  page <- tryCatch({
+    read_html(url)
+  }, error = function(e) {
+    message("Error fetching page: ", url)
+    return(NULL)
+  })
+  
+  if (is.null(page)) return(tibble(school_name = NA, school_link = NA, details = NA))
+  
+  # Extract school names
+  school_names <- page %>%
+    html_nodes("h2.text-xl a") %>%  
+    html_text(trim = TRUE)
+  
+  # Extract school links
+  school_links <- page %>%
+    html_nodes("h2.text-xl a") %>% 
+    html_attr("href")
+
+  # Extract school details (location and years)
+  school_details <- page %>%
+    html_nodes("p.text-sm.text-gray-500") %>%  
+    html_text(trim = TRUE)
+  
+  tibble(
+    school_name = school_names,
+    school_link = school_links,
+    details = school_details
+  )
+}
+
+# Scrape all pages (1 to 15)
+all_schools <- map_dfr(1:15, scrape_school_page)
+
+# View the final data
+print(all_schools)
+
+# Save to CSV
+write.csv(all_schools, "residential_schools.csv", row.names = FALSE)
+
+```
+
+
+Now we have the school name, the link to each of them, the state and years of operation. But we also want to know the religious affiliation and the table of deceased students (if they have the info), which is contained within the individual link of each school.
+
+```{r}
+
+library(rvest)
+library(tidyverse)
+library(httr)
+
+# Define a single school URL for testing
+schooltest_url <- "https://nctr.ca/residential-schools/alberta/whitefish-lake-st-andrews/"
+
+# Read the page
+page <- tryCatch({
+  read_html(schooltest_url)
+}, error = function(e) {
+  message("Error fetching page: ", schooltest_url)
+  return(NULL)
+})
+
+if (!is.null(page)) {
+  # Extract Religious Entity
+  religious_entity <- page %>%
+    html_nodes("p.max-w-2xl span.font-normal") %>% 
+    html_text(trim = TRUE)
+  
+  # Extract Student Memorial Table
+  table_node <- page %>% html_nodes("figure.wp-block-table table")
+
+  if (length(table_node) > 0) {
+    table_data <- table_node %>% 
+      html_table(fill = TRUE) %>% 
+      .[[1]]  # Extract first table if multiple exist
+  } else {
+    table_data <- tibble(Name = NA, Date_of_Death = NA)  # Placeholder if no table
+  }
+
+  # Print results
+  print(glue::glue("Religious Entity: {religious_entity}"))
+  print(table_data)
+}
+
+```
+
+
+Now with all
+
+```{r}
+library(rvest)
+library(tidyverse)
+library(httr)
+
+# Function to scrape a single school's details using its link
+
+scrape_school_details <- function(school_link) {
+  # Ensure the full URL is formed correctly
+  full_url <- ifelse(grepl("^https?://", school_link), school_link, paste0("https://nctr.ca", school_link))
+  
+  # Read the page
+  page <- tryCatch({
+    read_html(full_url)
+  }, error = function(e) {
+    message("Error fetching page: ", full_url)
+    return(NULL)
+  })
+  
+  if (is.null(page)) return(tibble(school_link = school_link, religious_entity = NA, student_data = NA))
+  
+  # Extract Religious Entity
+  religious_entity <- page %>%
+    html_nodes("p.max-w-2xl span.font-normal") %>%
+    html_text(trim = TRUE)
+  
+  # Extract Student Memorial Table
+  table_node <- page %>% html_nodes("figure.wp-block-table table")
+  
+  if (length(table_node) > 0) {
+    table_data <- table_node %>% 
+      html_table(fill = TRUE) %>% 
+      .[[1]]  # Extract first table if multiple exist
+  } else {
+    table_data <- tibble(Name = NA, Date_of_Death = NA)  # Placeholder if no table
+  }
+  
+  tibble(
+    school_link = school_link,
+    religious_entity = ifelse(length(religious_entity) > 0, religious_entity, NA),
+    student_data = list(table_data)  # Store tables in a list-column
+  )
+}
+
+# Apply the scraping function to all school links from `all_schools`
+detailed_school_data <- map_dfr(all_schools$school_link, scrape_school_details)
+
+# View the results
+print(detailed_school_data)
+
+```
+
+We join them by school_link
+
+```{r}
+# Ensure dplyr is loaded
+library(dplyr)
+
+# Join the two dataframes by the `school_link` column
+combined_data <- left_join(all_schools, detailed_school_data, by = "school_link")
+
+# View the combined data
+print(combined_data)
+
+```
+
+We want to separate the details of each school into: school type, location and years_operation, and then remove the original column
+
+```{r}
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract School Type (before " - ")
+    school_type = str_extract(details, "^[^ -]+"),
+
+    # Extract Location (between " - " and the year in parentheses)
+    location = str_extract(details, "(?<= - ).*(?= \\()"),
+
+    # Extract Years of Operation (in parentheses)
+    years_operation = str_extract(details, "\\(.*\\)")
+  ) %>%
+  # Remove the original 'details' column
+  select(-details)
+
+# View the updated combined data with the new columns
+print(combined_data)
+```
+
+
+We need to clean the years_operation column, there is duplicate data. Also, there are weird spaces within the numbers and we need to standardize them. We chose to remove the parentheses too:
+
+```{r}
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract only the last set of parentheses with years
+    years_operation = str_extract(years_operation, "\\([^()]*\\)$") %>%
+      str_replace_all("[()]", "") %>%  # Remove parentheses
+      str_trim() %>%  # Remove any leading or trailing spaces
+      str_replace_all("\\s*[–—-]\\s*", "-")  # Standardize dashes to "-"
+  )
+
+# View the cleaned data
+print(combined_data)
+```
+
+
+We're interested in seeing how many years each school was operating, so we extract the years from the column year_operation, we set them as numeric and we compute the substraction:
+
+```{r}
+
+library(dplyr)
+library(stringr)
+
+combined_data <- combined_data %>%
+  mutate(
+    # Extract the first and last year as numeric values
+    start_year = as.numeric(str_extract(years_operation, "^\\d{4}")),
+    end_year = as.numeric(str_extract(years_operation, "\\d{4}$")),
+    
+    # Calculate years in operation (if both values exist)
+    years_active = ifelse(!is.na(start_year) & !is.na(end_year),
+                          end_year - start_year,
+                          NA)
+  ) %>%
+
+
+# View the cleaned data
+print(combined_data)
+
+```
+
+
+
+## Second part: Interactive map
+
+Next, we go to the Arcgis map, because Selenium can't scrape an iframe that leads to another website. We detect how many markers there are in layer 9, we remove any spinner hidden in the code, locate the popup when clicking on a marker and returning the info on Title, Longitude and Latitude.
+
+
+```{r}
+library(RSelenium)
+library(stringr)
+
+# Connect to Selenium running in Docker
+remDr <- remoteDriver(
+  remoteServerAddr = "localhost",
+  port = 4449,
+  browserName = "firefox"
+)
+
+remDr$open()
+
+# Navigate to the ArcGIS map
+remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
+Sys.sleep(5)  # Wait for page to load
+
+# Find all markers in layer 9 (escape ID properly)
+layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
+print(paste("Layer 9 Markers found:", length(layer_9_markers)))
+
+
+# 🚀 **Remove Hidden Spinner (Preemptive)**
+remDr$executeScript("
+  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
+")
+Sys.sleep(5) 
+
+for (marker in layer_9_markers) {
+  Sys.sleep(2)  # Wait a bit before clicking
+  marker$clickElement()
+  
+  # Ensure no popups are blocking
+  close_buttons <- remDr$findElements(using = "css selector", "div.esriMobileNavigationBar img")
+  if (length(close_buttons) > 0) {
+    close_buttons[[1]]$clickElement()
+    Sys.sleep(2)
+  }
+
+  # Remove spinner if it's back
+  spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
+  if (length(spinners) > 0) {
+    remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
+    Sys.sleep(1)
+  }
+
+  # Scroll to marker
+  remDr$executeScript("arguments[0].scrollIntoView();", list(marker))
+  Sys.sleep(1)
+
+  # 🚀 **Remove Hidden Spinner Again**
+  remDr$executeScript("
+    Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
+  ")
+
+  # Locate the popup (single instance, since it updates content)
+  popup <- remDr$findElement(using = "css selector", "div.esriPopupWrapper")
+
+  remDr$screenshot(display = TRUE)  # Show image in RStudio Viewer
+
+  # Extract the title from the header
+  title_element <- popup$findChildElement(using = "css selector", ".header")
+  title <- title_element$getElementText()[[1]]
+
+  # Find all table rows in the popup
+  rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
+
+  latitude <- "N/A"
+  longitude <- "N/A"
+
+  for (row in rows) {
+    # Get columns (td elements) in each row
+    cols <- row$findChildElements(using = "css selector", "td")
+
+    if (length(cols) >= 2) {
+      name_element <- cols[[1]]  # First column (attribute name)
+      value_element <- cols[[2]] # Second column (attribute value)
+
+      name_text <- name_element$getElementText()[[1]]
+      value_text <- value_element$getElementText()[[1]]
+
+      if (grepl("Latitude", name_text, ignore.case = TRUE)) {
+        latitude <- value_text
+      } else if (grepl("Longitude", name_text, ignore.case = TRUE)) {
+        longitude <- value_text
+      }
+    }
+  }
+
+  print(paste("Title:", title, "Latitude:", latitude, "Longitude:", longitude))
+
+# ✅ **Close the Popup Before Moving to Next Marker**
+tryCatch({
+  close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
+  close_button$clickElement()
+  Sys.sleep(2)  # Allow time for the popup to close
+}, error = function(e) {
+  print("Popup close button not found or not clickable, moving on...")
+})
+
+}
+
+  # Save data
+school_data <- data.frame(Name = character(), Latitude = numeric(), Longitude = numeric(), stringsAsFactors = FALSE)
+
+# Close the session
+remDr$close()
+
+
+```
+
+
+This next part i dont know what its for, tbh
+
+```{r}
+library(RSelenium)
+library(stringr)
+
+# Connect to Selenium running in Docker
+remDr <- remoteDriver(
+  remoteServerAddr = "localhost",
+  port = 4449,
+  browserName = "firefox"
+)
+
+remDr$open()
+
+# Navigate to the ArcGIS map
+remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
+Sys.sleep(5)  # Wait for page to load
+
+# Find all markers in layer 9 (escape ID properly)
+layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
+print(paste("Layer 9 Markers found:", length(layer_9_markers)))
+
+# ✅ Initialize dataframe BEFORE the loop
+school_data <- data.frame(Name = character(), Latitude = numeric(), Longitude = numeric(), stringsAsFactors = FALSE)
+
+# 🚀 **Remove Hidden Spinner (Preemptive)**
+remDr$executeScript("
+  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
+")
+Sys.sleep(5) 
+
+for (marker in layer_9_markers) {
+  Sys.sleep(2)  # Wait a bit before clicking
+  marker$clickElement()
+  
+  # Ensure no popups are blocking
+  close_buttons <- remDr$findElements(using = "css selector", "div.esriMobileNavigationBar img")
+  if (length(close_buttons) > 0) {
+    close_buttons[[1]]$clickElement()
+    Sys.sleep(2)
+  }
+
+  # Remove spinner if it's back
+  spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
+  if (length(spinners) > 0) {
+    remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
+    Sys.sleep(1)
+  }
+
+  # Scroll to marker
+  remDr$executeScript("arguments[0].scrollIntoView();", list(marker))
+  Sys.sleep(1)
+
+  # 🚀 **Remove Hidden Spinner Again**
+  remDr$executeScript("
+    Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
+  ")
+
+  # Locate the popup (single instance, since it updates content)
+  popup <- remDr$findElement(using = "css selector", "div.esriPopupWrapper")
+
+
+  # Extract the title from the header
+  title_element <- popup$findChildElement(using = "css selector", ".header")
+  title <- title_element$getElementText()[[1]]
+
+  # Find all table rows in the popup
+  rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
+
+  latitude <- "N/A"
+  longitude <- "N/A"
+
+  for (row in rows) {
+    # Get columns (td elements) in each row
+    cols <- row$findChildElements(using = "css selector", "td")
+
+    if (length(cols) >= 2) {
+      name_element <- cols[[1]]  # First column (attribute name)
+      value_element <- cols[[2]] # Second column (attribute value)
+
+      name_text <- name_element$getElementText()[[1]]
+      value_text <- value_element$getElementText()[[1]]
+
+      if (grepl("Latitude", name_text, ignore.case = TRUE)) {
+        latitude <- value_text
+      } else if (grepl("Longitude", name_text, ignore.case = TRUE)) {
+        longitude <- value_text
+      }
+    }
+  }
+
+  # ✅ **Append the extracted data to the dataframe**
+  school_data <- rbind(school_data, data.frame(Name = title, Latitude = latitude, Longitude = longitude, stringsAsFactors = FALSE))
+
+  # ✅ **Close the Popup Before Moving to Next Marker**
+  tryCatch({
+    close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
+    close_button$clickElement()
+    Sys.sleep(2)  # Allow time for the popup to close
+  }, error = function(e) {
+    print("Popup close button not found or not clickable, moving on...")
+  })
+}
+
+# ✅ Print final dataframe
+print(school_data)
+
+# ✅ Save dataframe to CSV file
+write.csv(school_data, "school_data.csv", row.names = FALSE)
+
+# Close the session
+remDr$close()
+
+```
+
+
+Works but we have 52 missing data when we shouldn't. We try a new approach scrolling the map. Printing each result in the console and screenshoting every time it scrolls.
+
+```{r}
+library(RSelenium)
+library(stringr)
+
+# Connect to Selenium running in Docker
+remDr <- remoteDriver(
+  remoteServerAddr = "localhost",
+  port = 4449,
+  browserName = "firefox"
+)
+
+remDr$open()
+
+# Navigate to the ArcGIS map
+remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
+Sys.sleep(5)  # Wait for page to load
+
+# Remove hidden spinners
+remDr$executeScript("
+  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
+")
+Sys.sleep(5) 
+
+# Function to take a screenshot
+take_screenshot <- function(filename) {
+  screenshot_file <- paste0(filename, ".png")
+  remDr$screenshot(file = screenshot_file)
+  print(paste("📸 Screenshot saved:", screenshot_file))
+}
+
+# Function to move (pan) the map
+move_map <- function(x_offset, y_offset, step_name) {
+  print(paste("🗺️ Moving map:", step_name))
+  remDr$executeScript("
+    let map = document.querySelector('.esriViewRoot'); 
+    map.scrollBy(arguments[0], arguments[1]);", 
+    list(x_offset, y_offset)
+  )
+  Sys.sleep(3)  # Allow time for map to load
+  take_screenshot(paste0("map_moved_", step_name))
+}
+
+# Define scroll movements
+movements <- list(
+  list(x = 500, y = 0, name = "Right"),
+  list(x = -1000, y = 0, name = "Left"),
+  list(x = 500, y = 500, name = "Down"),
+  list(x = 500, y = -1000, name = "Up")
+)
+
+# Function to scrape markers
+scrape_markers <- function() {
+  layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
+  print(paste("🔍 Total markers found:", length(layer_9_markers)))
+
+  for (marker in layer_9_markers) {
+    Sys.sleep(2)
+    marker$clickElement()
+    
+    # Remove spinner if it reappears
+    spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
+    if (length(spinners) > 0) {
+      remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
+      Sys.sleep(1)
+    }
+
+    Sys.sleep(2)
+    popups <- remDr$findElements(using = "css selector", "div.esriPopupWrapper")
+
+    if (length(popups) == 0) {
+      print("⚠️ Popup not found. Skipping marker.")
+      next
+    }
+
+    popup <- popups[[1]]
+    title_element <- popup$findChildElement(using = "css selector", ".header")
+    title <- title_element$getElementText()[[1]]
+
+    # Find all table rows in the popup
+    rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
+
+    latitude <- "N/A"
+    longitude <- "N/A"
+
+    for (row in rows) {
+      cols <- row$findChildElements(using = "css selector", "td")
+      if (length(cols) >= 2) {
+        name_text <- cols[[1]]$getElementText()[[1]]
+        value_text <- cols[[2]]$getElementText()[[1]]
+
+        if (grepl("Latitude", name_text, ignore.case = TRUE)) {
+          latitude <- value_text
+        } else if (grepl("Longitude", name_text, ignore.case = TRUE)) {
+          longitude <- value_text
+        }
+      }
+    }
+
+    print(paste("✅ Title:", title, "Latitude:", latitude, "Longitude:", longitude))
+
+    # Close the popup
+    tryCatch({
+      close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
+      close_button$clickElement()
+      Sys.sleep(2)
+    }, error = function(e) {
+      print("Popup close button not found. Skipping closure.")
+    })
+  }
+}
+
+# 🚀 **Scrape first pass**
+scrape_markers()
+
+# 🚀 **Scroll the map in all directions**
+for (move in movements) {
+  move_map(move$x, move$y, move$name)
+  scrape_markers()  # Try scraping again after each movement
+}
+
+# 🚀 **Final pass to ensure all markers were scraped**
+scrape_markers()
+
+# Save data
+write.csv(scraped_markers, "scraped_markers.csv", row.names = FALSE)
+
+# Close the session
+remDr$close()
+
+
+```
+
+
+```{r}
+library(RSelenium)
+library(stringr)
+
+# Connect to Selenium running in Docker
+remDr <- remoteDriver(
+  remoteServerAddr = "localhost",
+  port = 4449,
+  browserName = "firefox"
+)
+
+remDr$open()
+
+# Navigate to the ArcGIS map
+remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
+Sys.sleep(5)  # Wait for page to load
+
+
+# Locate the Map Element
+mapElement <- remDr$findElement(using = "xpath", value = "//*[@id='map']")  # Adjust the XPath as necessary
+
+# Define Drag Offsets for each direction
+drag_offsets <- list(
+    list(startX = 0, startY = 0, endX = 500, endY = 0),   # Right
+    list(startX = 500, startY = 0, endX = 500, endY = 500), # Down
+    list(startX = 500, startY = 500, endX = 0, endY = 500), # Left
+    list(startX = 0, startY = 500, endX = 0, endY = 0)      # Up
+)
+
+# Loop Through Offsets and Take Screenshots
+for (i in seq_along(drag_offsets)) {
+    offset <- drag_offsets[[i]]
+    
+    # Take Initial Screenshot
+    remDr$screenshot(file = paste0("before_drag_", i, ".png"))
+    print(paste("📸 Screenshot saved: before_drag_", i, ".png", sep = ""))
+
+    # Define the JavaScript for dragging
+    drag_script <- "
+    var map = arguments[0];
+    var mouseDownEvent = new MouseEvent('mousedown', {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: arguments[1],
+        clientY: arguments[2]
+    });
+    map.dispatchEvent(mouseDownEvent);
+
+    var mouseMoveEvent = new MouseEvent('mousemove', {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: arguments[3],
+        clientY: arguments[4]
+    });
+    map.dispatchEvent(mouseMoveEvent);
+
+    var mouseUpEvent = new MouseEvent('mouseup', {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: arguments[3],
+        clientY: arguments[4]
+    });
+    map.dispatchEvent(mouseUpEvent);
+    "
+
+    # Execute the drag script with offsets
+    remDr$executeScript(drag_script, list(mapElement, offset$startX, offset$startY, offset$endX, offset$endY))
+
+    # Take Screenshot After Dragging
+    remDr$screenshot(file = paste0("after_drag_", i, ".png"))
+    print(paste("📸 Screenshot saved: after_drag_", i, ".png", sep = ""))
+}
+
+
+remDr$close()
+
+
+
+```
+
