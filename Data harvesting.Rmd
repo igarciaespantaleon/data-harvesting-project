@@ -755,3 +755,183 @@ remDr$close()
 
 ```
 
+## VISUALIZATIONS
+```{r}
+# prepare the dataframe
+map_data <- read.csv("school_data.csv", sep = ";")
+
+head(map_data)
+
+map_data <- map_data |> 
+  mutate(Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(Longitude)) 
+
+map_data_clean <- map_data |> 
+  filter(!is.na(Latitude) & !is.na(Longitude))
+```
+
+```{r}
+ibrary(stringr)
+
+map_data_wrong <- map_data %>%
+  filter(str_detect(Name, "Hearing|Confirmed"))
+
+correct_names <- map_data_clean$Name %>% str_remove("Canadian Residential Schools: ")
+wrong_names <- map_data_wrong$Name %>% 
+  str_remove("Residential Schools - Confirmed Inuit Attendance: ")
+
+intersect(correct_names, wrong_names)
+
+```
+
+This should prove that the schools stored from Confirmed Inuit Attendance pop ups are not also stored from Canadian Residential Schools pop ups (which we could anticipate).
+
+```{r}
+library(maps)
+canada_map <- map_data("world", region = "Canada")
+
+
+ggplot() +
+  geom_polygon(data = canada_map, aes(x = long, y = lat, group = group),
+               fill = "gray90", color = "black", alpha = 0.5) +  # Canada outline
+  geom_point(data = map_data_clean, aes(x = Longitude, y = Latitude),
+             color = "blue", size = 3) +  # School points
+  theme_minimal() +
+  labs(title = "",
+       x = "",
+       y = "")
+
+```
+
+```{r}
+
+## PLOTS
+Lollipop chart for active years of each school.
+
+ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
+       aes(x = reorder(school_name, -end_year), y = start_year, color = religious_entity)) +
+  geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
+  geom_point(aes(y = end_year), size = 4) +  # Lollipop head
+  geom_point(aes(y = start_year), size = 4, shape = 1) +  # Open circle at start year
+  coord_flip() +  # Horizontal orientation
+  theme_minimal() +
+  labs(title = "Years of Operation of Schools",
+       x = "School Name",
+       y = "Year",
+       color = "Religious Entity") +
+  scale_color_brewer(palette = "Set2")
+
+ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
+       aes(x = reorder(school_name, -start_year), y = start_year, color = religious_entity)) +
+  geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
+  geom_point(aes(y = end_year), size = 2) +  # Lollipop head
+  geom_point(aes(y = start_year), size = 2, shape = 1) +  # Open circle at start year
+  coord_flip() +  # Horizontal orientation
+  theme_minimal() +
+  labs(title = "Years of Operation of Schools",
+       x = "School Name",
+       y = "Year",
+       color = "Religious Entity") +
+  scale_color_viridis_d()
+
+```
+
+
+To work with the student data:
+
+```{r}
+# I extract the student data from the tibbles nested inside the detailed_school_data tibble
+expanded_data <- detailed_school_data %>%
+  unnest(cols = student_data)
+
+# some cleaning is needed: two columns from the date of death were created, one of them with only NAs
+colSums(!is.na(expanded_data))
+
+
+expanded_data <- expanded_data %>%
+  select(-`Date_of_Death`) %>% # remove the ones with just NAs
+  rename(date_of_death = `Date of Death (Year/Month/Day)`, # rename the one we're going to keep
+full_name = Name) %>% # standardize colnames
+  left_join(combined_data %>%
+              select(school_link, school_name), by = "school_link") %>%
+  select(school_name, everything())
+```
+
+I manually checked in the detailed_school_data set that some schools had empty tibbles for student data. I guess for this dataset it makes sense to keep just the schools that have actual data about student deaths, even if more schools are present in the complete database.
+
+```{r}
+expanded_data %>%
+  group_by(school_name) %>%
+  summarise(
+    total_rows = n(), # check if the schools with NAs have other cases or just empty tibbles
+    na_full_name = sum(is.na(full_name)),
+    na_date_of_death = sum(is.na(date_of_death))
+  ) |> 
+  filter(na_full_name > 0)
+```
+
+The are no explicit NAs in the tibble that DO NOT correspond to schools with empty tibbles in the original dataset (no cases documented). Removing NAs will remove all of those schools.
+
+```{r}
+expanded_data <- drop_na(expanded_data)
+
+```
+
+This dropped about 300 rows.
+
+Next step is cleaning the date column:
+
+```{r}
+# first explore the different formats there are
+expanded_data %>%
+  select(date_of_death) |> 
+  filter(!str_detect(date_of_death, "^\\d{4}-\\d{2}-\\d{2}$")) |> # filter out the dates on the standard YYYY-MM-DD format
+  filter(date_of_death != "Not known") # there are some straight up missing
+```
+
+There are a few with a "ca. " format which we can get rid of because it provides no useful information:
+
+```{r}
+expanded_data <- expanded_data |> 
+  mutate(
+    date_of_death = str_replace_all(date_of_death, "^ca\\.\\s*", "")
+  )
+
+```
+
+
+This leaves us with five different possible formats:
+  - YYYY
+- YYYY - YYYY
+- YYYY-MM
+- YYYY-MM-DD - YYYY-MM-DD (the interval can be months long)
+- YYYY-MM-DD or YYYY-MM-DD (the two dates dont need to be consecutive, they can be weeks or months apart)
+
+```{r}
+expanded_data <- expanded_data |> 
+  mutate(
+    # Case 1: Year only (YYYY) → Append "-01-01"
+    date_of_death = str_replace(date_of_death, "^(\\d{4})$", "\\1-01-01"),
+    
+    # Case 2: Date range with en dash OR normal hyphen "YYYY-MM-DD – YYYY-MM-DD" → Pick randomly
+   date_of_death = if_else(
+      str_detect(date_of_death, "^(\\d{4}-\\d{2}-\\d{2})[ –-](\\d{4}-\\d{2}-\\d{2})$"),
+      sample(unlist(str_extract_all(date_of_death, "\\d{4}-\\d{2}-\\d{2}")), 1),
+      date_of_death
+    ),
+    # Case 3: Two alternative dates "YYYY-MM-DD or YYYY-MM-DD" → Pick one randomly
+    date_of_death = if_else(
+      str_detect(date_of_death, " or "), 
+      str_extract(date_of_death, "(^\\d{4}-\\d{2}-\\d{2})|(?<= or )\\d{4}-\\d{2}-\\d{2}") %>% sample(1), 
+      date_of_death
+    ),
+
+    # Case 4: Year range "YYYY – YYYY" → Convert to the first day of the second year
+    date_of_death = str_replace(date_of_death, "^(\\d{4}) – (\\d{4})$", "\\2-01-01"),
+    
+     # Case 5: Year-Month "YYYY-MM" → Convert to YYYY-MM-15
+    date_of_death = str_replace(date_of_death, "^(\\d{4}-\\d{2})$", "\\1-15")
+  )
+
+```
+
