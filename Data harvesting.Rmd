@@ -9,9 +9,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## First part: shools list
 
-We are going to scrape the list of Residential Schools from the NCTR archive web. We need the school name, the years it was open, the location (Town, State) and the link to their individual page. 
+# Loading libraries
 
 ```{r}
 rm(list=ls()) 
@@ -24,9 +23,23 @@ library(tidyr)
 library(stringr)
 library(ggplot2)
 library(tidyverse)
+library(RSelenium)
+library(maps)
+library(lubridate)
+library(zoo)
+library(fuzzyjoin)
+library(stringdist)
+library(purrr)
+library(canadianmaps)
+library(shiny)
+library(leaflet)
+library(plotly)
 
 ```
 
+## First part: schools list
+
+We are going to scrape the list of Residential Schools from the NCTR archive web. We need the school name, the years it was open, the location (Town, State) and the link to their individual page. 
 
 ```{r}
 
@@ -123,10 +136,6 @@ Now we have the school name, the link to each of them, the state and years of op
 
 ```{r}
 
-library(rvest)
-library(tidyverse)
-library(httr)
-
 # Define a single school URL for testing
 schooltest_url <- "https://nctr.ca/residential-schools/alberta/whitefish-lake-st-andrews/"
 
@@ -166,10 +175,6 @@ if (!is.null(page)) {
 Now with all
 
 ```{r}
-library(rvest)
-library(tidyverse)
-library(httr)
-
 # Function to scrape a single school's details using its link
 
 scrape_school_details <- function(school_link) {
@@ -220,8 +225,6 @@ print(detailed_school_data)
 We join them by school_link
 
 ```{r}
-# Ensure dplyr is loaded
-library(dplyr)
 
 # Join the two dataframes by the `school_link` column
 combined_data <- left_join(all_schools, detailed_school_data, by = "school_link")
@@ -234,8 +237,7 @@ print(combined_data)
 We want to separate the details of each school into: school type, location and years_operation, and then remove the original column
 
 ```{r}
-library(dplyr)
-library(stringr)
+
 
 combined_data <- combined_data %>%
   mutate(
@@ -259,8 +261,6 @@ print(combined_data)
 We need to clean the years_operation column, there is duplicate data. Also, there are weird spaces within the numbers and we need to standardize them. We chose to remove the parentheses too:
 
 ```{r}
-library(dplyr)
-library(stringr)
 
 combined_data <- combined_data %>%
   mutate(
@@ -279,9 +279,6 @@ print(combined_data)
 We're interested in seeing how many years each school was operating, so we extract the years from the column year_operation, we set them as numeric and we compute the substraction:
 
 ```{r}
-
-library(dplyr)
-library(stringr)
 
 combined_data <- combined_data %>%
   mutate(
@@ -310,7 +307,6 @@ Next, we go to the Arcgis map, because Selenium can't scrape an iframe that lead
 
 ```{r}
 library(RSelenium)
-library(stringr)
 
 # Connect to Selenium running in Docker
 remDr <- remoteDriver(
@@ -423,8 +419,6 @@ remDr$close()
 This next part i dont know what its for, tbh
 
 ```{r}
-library(RSelenium)
-library(stringr)
 
 # Connect to Selenium running in Docker
 remDr <- remoteDriver(
@@ -540,8 +534,6 @@ remDr$close()
 Works but we have 52 missing data when we shouldn't. We try a new approach scrolling the map. Printing each result in the console and screenshoting every time it scrolls.
 
 ```{r}
-library(RSelenium)
-library(stringr)
 
 # Connect to Selenium running in Docker
 remDr <- remoteDriver(
@@ -673,9 +665,6 @@ remDr$close()
 
 
 ```{r}
-library(RSelenium)
-library(stringr)
-
 # Connect to Selenium running in Docker
 remDr <- remoteDriver(
   remoteServerAddr = "localhost",
@@ -755,10 +744,14 @@ remDr$close()
 
 ```
 
-## VISUALIZATIONS
+## Data cleaning and processing
+
+### Map data
+
+The first step will be to import the csv file that resulted from the map's scraping. We also want to convert latitude and longitude to numeric format, and filter the rows that weren't scraped correctly.
+
 ```{r}
-# prepare the dataframe
-map_data <- read.csv("school_data.csv", sep = ";")
+map_data <- read.csv("school_data.csv", sep = ",")
 
 head(map_data)
 
@@ -768,96 +761,105 @@ map_data <- map_data |>
 
 map_data_clean <- map_data |> 
   filter(!is.na(Latitude) & !is.na(Longitude))
+
+head(map_data_clean)
 ```
 
-```{r}
-ibrary(stringr)
+Since we scraped some entities that weren't actual Residential Schools, we wanted to check if the latitude and longitude of some of those entities had been successfully stored.
 
-map_data_wrong <- map_data %>%
+```{r}
+map_data %>%
   filter(str_detect(Name, "Hearing|Confirmed"))
+```
+Unfortunately, we observe that all of those observations have missing latitude and longitude, so we won't use them.
 
-correct_names <- map_data_clean$Name %>% str_remove("Canadian Residential Schools: ")
-wrong_names <- map_data_wrong$Name %>% 
-  str_remove("Residential Schools - Confirmed Inuit Attendance: ")
+The scraped table only has information on the coordinates, as well as the name, of the schools from the map, so we will have to resort to other tables to join any additional information we want to use. We quickly noticed that the school names that were scraped from the map didn't correspond to the ones scraped from the web archive in most cases, so we had perform some preprocessing to allow the join.
 
-intersect(correct_names, wrong_names)
+First, we clean map_data_clean by removing the prefix "Canadian Residential Schools: " from school names. Then, we filter out "Unknown Residential Schools" from combined_data since it does not correspond to a specific institution in the map data. 
+
+```{r}
+map_data_clean <- map_data_clean %>%
+  mutate(Name = str_remove(Name, "^Canadian Residential Schools: "))
+
+
+combined_data_join <- combined_data |> 
+  select(school_name) |> 
+  filter(school_name != "Unknown Residential Schools")
+``` 
+
+To handle disparities, we use a fuzzy join, which allows us to match schools even when their names have slight variations. We then refine the matches by selecting the closest corresponding name for each school (because, particularly due to the difference in length of the two data sets, some of the names were used for more than one match).
+
+```{r}
+# installed.packages("fuzzyjoin")
+library(fuzzyjoin)
+
+# Fuzzy join based on name similarity
+correspondences <- stringdist_full_join(
+  combined_data_join, 
+  map_data_clean, 
+  by = c("school_name" = "Name"),
+  method = "jw",  # Jaro-Winkler similarity method
+  max_dist = 0.25 
+)
+
+# keeping only the matches with minimum distance
+library(stringdist)
+correspondences <- correspondences %>%
+  group_by(school_name) %>%
+  filter(stringdist(school_name, Name, method = "jw") == min(stringdist(school_name, Name, method = "jw"))) %>%
+  ungroup() |> 
+  group_by(Name) %>%
+  filter(stringdist(school_name, Name, method = "jw") == min(stringdist(school_name, Name, method = "jw"))) %>%
+  ungroup()
+```
+
+Now, we can use a simple line of code to identify discrepancies.
+
+```{r}
+setdiff(map_data_clean$Name, correspondences$Name)
+```
+
+We manually checked that three of the names from the map that hadn't been identified by the fuzzyjoin, actually had a match in the web table, so we bind them.
+
+```{r}
+new_rows <- map_data_clean |> 
+  filter(Name %in% c("Amos", "Kitimaat", "Wabasca (Athabasca Landing)")) |> 
+  mutate(
+  school_name = case_when(
+    Name == "Amos" ~ "Amos (Saint-Marc-de-Figuery)", 
+    Name == "Kitimaat" ~ "Kitimaat (Elizabeth Long Memorial Home for Girls)",
+    Name == "Wabasca (Athabasca Landing)" ~ "Wabasca (St. John’s)"))
+
+# Add the new rows to the correspondences dataframe and sort alphabetically
+correspondences <- bind_rows(correspondences, new_rows) |> arrange(Name)
 
 ```
 
-This should prove that the schools stored from Confirmed Inuit Attendance pop ups are not also stored from Canadian Residential Schools pop ups (which we could anticipate).
+We merged the matched data back into map_data_clean, so that we have the two versions of school names and can perform future joins. With this step we lose the 7 schools that were scraped from the map but not found in the web (we searched for them manually without results, we don't know if they are known by other names or if they are missing from the archive altogether), ending up with 80 observations with data on coordinates.
+
+### Web archive data
+
+To work with the student data, we first need to extract the student data from the tibbles nested inside the detailed_school_data tibble that we created earlier, and perform some cleaning and preprocessing.
 
 ```{r}
-library(maps)
-canada_map <- map_data("world", region = "Canada")
-
-
-ggplot() +
-  geom_polygon(data = canada_map, aes(x = long, y = lat, group = group),
-               fill = "gray90", color = "black", alpha = 0.5) +  # Canada outline
-  geom_point(data = map_data_clean, aes(x = Longitude, y = Latitude),
-             color = "blue", size = 3) +  # School points
-  theme_minimal() +
-  labs(title = "",
-       x = "",
-       y = "")
-
-```
-
-```{r}
-
-## PLOTS
-Lollipop chart for active years of each school.
-
-ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
-       aes(x = reorder(school_name, -end_year), y = start_year, color = religious_entity)) +
-  geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
-  geom_point(aes(y = end_year), size = 4) +  # Lollipop head
-  geom_point(aes(y = start_year), size = 4, shape = 1) +  # Open circle at start year
-  coord_flip() +  # Horizontal orientation
-  theme_minimal() +
-  labs(title = "Years of Operation of Schools",
-       x = "School Name",
-       y = "Year",
-       color = "Religious Entity") +
-  scale_color_brewer(palette = "Set2")
-
-ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
-       aes(x = reorder(school_name, -start_year), y = start_year, color = religious_entity)) +
-  geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
-  geom_point(aes(y = end_year), size = 2) +  # Lollipop head
-  geom_point(aes(y = start_year), size = 2, shape = 1) +  # Open circle at start year
-  coord_flip() +  # Horizontal orientation
-  theme_minimal() +
-  labs(title = "Years of Operation of Schools",
-       x = "School Name",
-       y = "Year",
-       color = "Religious Entity") +
-  scale_color_viridis_d()
-
-```
-
-
-To work with the student data:
-
-```{r}
-# I extract the student data from the tibbles nested inside the detailed_school_data tibble
 expanded_data <- detailed_school_data %>%
   unnest(cols = student_data)
 
-# some cleaning is needed: two columns from the date of death were created, one of them with only NAs
+# two columns from the date of death were created, one of them with only NAs
 colSums(!is.na(expanded_data))
 
-
 expanded_data <- expanded_data %>%
-  select(-`Date_of_Death`) %>% # remove the ones with just NAs
+  select(-`Date_of_Death`) %>% # remove the column with just NAs
   rename(date_of_death = `Date of Death (Year/Month/Day)`, # rename the one we're going to keep
-full_name = Name) %>% # standardize colnames
+full_name = Name) %>% # standardize column names
   left_join(combined_data %>%
-              select(school_link, school_name), by = "school_link") %>%
-  select(school_name, everything())
+              select(school_link, school_name), by = "school_link") %>% # the school_name column is missing from this table, so we use the links to join the names from combined_data
+  select(school_name, everything()) # place the school name first
+
+head(expanded_data)
 ```
 
-I manually checked in the detailed_school_data set that some schools had empty tibbles for student data. I guess for this dataset it makes sense to keep just the schools that have actual data about student deaths, even if more schools are present in the complete database.
+We manually checked in the detailed_school_data set that some schools had empty tibbles for student data. We thought that for this data set it made sense to keep just the schools that have actual data about student deaths, even if more schools are present in the complete database.
 
 ```{r}
 expanded_data %>%
@@ -874,12 +876,11 @@ The are no explicit NAs in the tibble that DO NOT correspond to schools with emp
 
 ```{r}
 expanded_data <- drop_na(expanded_data)
-
 ```
 
 This dropped about 300 rows.
 
-Next step is cleaning the date column:
+The next step is cleaning the date column:
 
 ```{r}
 # first explore the different formats there are
@@ -889,49 +890,509 @@ expanded_data %>%
   filter(date_of_death != "Not known") # there are some straight up missing
 ```
 
-There are a few with a "ca. " format which we can get rid of because it provides no useful information:
+There are a few with a "ca. " format which we can get rid of because it provides no useful information.
+
+This leaves us with five different possible formats:
+- YYYY
+- YYYY - YYYY
+- YYYY-MM
+- YYYY-MM-DD - YYYY-MM-DD (the interval can be months or even years long)
+- YYYY-MM-DD or YYYY-MM-DD (the two dates don't need to be consecutive)
+
+We decided to work with year-month format. Our goal was to be able to identify those deaths that had very long date intervals, and potentially exclude them if we deemed them less reliable for some parts of our analysis.
+
+In the next chunk we added comments for all steps of this process.
 
 ```{r}
-expanded_data <- expanded_data |> 
+library(purrr)
+
+expanded_data <- expanded_data %>%
   mutate(
-    date_of_death = str_replace_all(date_of_death, "^ca\\.\\s*", "")
+    # Trim whitespace
+    date_of_death = str_trim(date_of_death),
+    # Standardize separators (long and short hyphens were present in the original data set)
+    date_of_death = str_replace_all(date_of_death, "–", "-"),
+    # Replace "or" by "-"
+    date_of_death = str_replace_all(date_of_death, "\\s*or\\s*", " - "),
+    # delete any "ca." expression
+    date_of_death = str_replace_all(date_of_death, "ca\\.\\s*", ""),
+    # Replace 31 by 30 in the day position to correct invalid dates (some rows had the 31st day for months that do not have 31 days, and this was preventing R from recognising them as dates)
+    date_of_death = str_replace(date_of_death, "-31$", "-30"),
+    # Convert full dates (YYYY-MM-DD) into a year-month format (YYYY-MM)
+    date_of_death = str_replace_all(date_of_death, "(\\d{4}-\\d{2})-\\d{2}", "\\1")
+  ) %>%
+    # Handle date ranges by splitting values at " - "
+  mutate(split_dates = str_split(date_of_death, "\\s+-\\s+")) %>%
+  mutate(
+    # Create date_start and date_end, ensuring that if only one date is provided, it is used as both start and end
+    date_start = map_chr(split_dates, ~ .x[1]),
+    date_end   = map_chr(split_dates, ~ if(length(.x) >= 2) .x[2] else .x[1])
+  ) %>%
+  select(-split_dates) %>%
+  mutate(
+    date_start = str_trim(date_start),
+    date_end   = str_trim(date_end),
+    # If only the year is provided, we assume January (-01) for date_start and December (-12) for date_end (for both YYYY and YYYY-YYYY formats)
+    date_start = if_else(nchar(date_start) == 4, paste0(date_start, "-01"), date_start),
+    date_end   = if_else(nchar(date_end)   == 4, paste0(date_end, "-12"), date_end)
+  ) %>%
+  # Convert into a year-month format
+  mutate(across(c(date_start, date_end), ~ as.yearmon(.x, "%Y-%m")))
+```
+
+We run a test:
+```{r}
+expanded_data |> filter(is.na(date_end) & date_of_death != "Not known")
+```
+
+And find that there is only one case where the date_end column wasn't correctly filled, because there is a typo in the source, where the second date in date_of_death is 13. We can manually change it to 12 so that we don't lose this observation.
+
+```{r}
+expanded_data <- expanded_data %>%
+  mutate(
+    date_of_death = if_else(date_of_death == "1948-06 - 1949-13", "1948-06 - 1949-12", date_of_death),
+    date_end = if_else(date_of_death == "1948-06 - 1949-12", as.yearmon("1949-12", "%Y-%m"), date_end)
   )
+```
+
+With these columns we can now check for death date intervals of any specific length:
+```{r}
+expanded_data |> filter(date_end - date_start > 0.5) # cases with a gap between possible death dates of more than 6 months
+```
+
+Though we still have many students whose dates of death are not known. 
+```{r}
+expanded_data %>%
+  summarise(
+    date_not_known = sum(date_of_death == "Not known"),
+    date_start_na = sum(is.na(date_start)),
+    date_end_na = sum(is.na(date_end))
+  )
+```
+### Province data
+
+Since we scraped location data for every school from the website, we can have information of the schools and deaths at the province level.
+
+```{r}
+combined_data <- combined_data %>%
+  mutate(province = str_extract(location, "[A-Z]{2}$"))
+
+combined_data %>%
+  filter(is.na(province)) %>%
+  select(school_name, location, province)
+```
+
+We have 3 NAs in the province column, the first one of which can be easily amended:
+
+```{r}
+combined_data$province[combined_data$school_name == "Red Deer Industrial School"] <- "AB"
+```
+
+The second one, Regina Industrial School, is mentioned to have been located in the province of Saskatchewan in the NCTR post, but it wasn't scraped correctly. We will manually add this information to have a more precise analysis.
+
+```{r}
+combined_data <- combined_data %>%
+  mutate(
+    location = case_when(
+      school_name == "Regina" ~ "Regina, SK",
+      TRUE ~ location  # Keep existing values
+    ),
+    province = case_when(
+      school_name == "Regina" ~ "SK",
+      TRUE ~ province  # Keep existing values
+    )
+  )
+```
+
+The last row logically has no location data, because it does not refer to a single residential school.
+
+Next, we joined the province data to our existing expanded_data table:
+
+```{r}
+expanded_data <- expanded_data %>%
+  left_join(combined_data %>% select(school_name, province), by = "school_name")
+```
+
+And calculated the deaths per each province.
+
+```{r}
+deaths_per_province <- expanded_data %>%
+  filter(!is.na(province)) %>%
+  group_by(province) %>%
+  summarise(deaths = n())
+```
+
+We then merged this with the PROV object of the canadianmaps package so we could build a map for province data. 
+
+```{r}
+# Merge the deaths_per_province dataset with the province data
+deaths_per_province <- merge(PROV, deaths_per_province, by.x = "PT", by.y = "province", all.x = TRUE)
+```
+
+### Tables for plots
+
+In this section we will create some additional tables needed for the plots and maps of our shiny app.
+
+First, a table that displays the total number of deaths, total number of schools, and deaths per school of each religious entity
+
+```{r}
+church_data <- expanded_data %>%
+  group_by(religious_entity) %>%
+  summarise(
+    total_deaths = n(),
+    total_schools = n_distinct(school_name)
+  ) %>%
+  mutate(deaths_per_school = total_deaths / total_schools) %>%
+  arrange(desc(deaths_per_school))
+
+setdiff(combined_data$religious_entity, church_data$religious_entity)
+
+# Mennonite and Presbyterian Church aren't in the expanded_data table because they have no records of student deaths, however, we want to keep them with 0s in these columns
+
+church_bind <- combined_data %>%
+  filter(religious_entity %in% c("Mennonite", "Presbyterian Church")) %>%
+  group_by(religious_entity) %>%
+  summarise(
+    total_schools = n_distinct(school_name),
+    total_deaths = 0,  # No recorded deaths
+    deaths_per_school = 0  # Avoid NaNs or divisions by zero
+  )
+
+church_data <- bind_rows(church_data, church_bind)
+```
+
+Here are some of the plots that we can create with this table:
+
+```{r}
+
+# ggplot(church_data, aes(x = reorder(religious_entity, total_deaths), y = total_deaths, fill = religious_entity)) +
+#   geom_col(show.legend = FALSE) +
+#   coord_flip() +  # Para facilitar la lectura
+#   labs(
+#     title = "Total number of deaths by religious entity",
+#     x = "",
+#     y = ""
+#   ) +
+#   theme_minimal()
+# 
+# 
+# 
+# ggplot(church_data, aes(x = reorder(religious_entity, deaths_per_school), y = deaths_per_school, fill = religious_entity)) +
+#   geom_col(show.legend = FALSE) +
+#   coord_flip() +
+#   labs(
+#     title = "Deaths per school by religious entity",
+#     x = "",
+#     y = ""
+#   ) +
+#   theme_minimal()
+# 
+# 
+# 
+# ggplot(church_data, aes(x = reorder(religious_entity, total_schools), y = total_schools, fill = religious_entity)) +
+#   geom_col(show.legend = FALSE) +
+#   coord_flip() +
+#   labs(
+#     title = "Number of schools by religious entity",
+#     x = "",
+#     y = ""
+#   ) +
+#   theme_minimal()
 
 ```
 
-
-This leaves us with five different possible formats:
-  - YYYY
-- YYYY - YYYY
-- YYYY-MM
-- YYYY-MM-DD - YYYY-MM-DD (the interval can be months long)
-- YYYY-MM-DD or YYYY-MM-DD (the two dates dont need to be consecutive, they can be weeks or months apart)
+Using the table created in the previous section (deaths_per_province), we can now plot a map:
 
 ```{r}
-expanded_data <- expanded_data |> 
+# ggplot(deaths_per_province) +
+#   geom_sf(aes(fill = deaths), colour = "white", size = 0.1) +
+#   scale_fill_gradientn(
+#     colours = c("lightblue", "blue", "darkblue"),  # Specify the gradient colors
+#     values = c(0, 0.5, 1),  # Adjust these to match the range of your data
+#     na.value = "gray",  # Gray for NA values
+#     name = "", 
+#     breaks = c(0, 200, 400, 600),  # Define breaks where you want labels
+#     labels = c("No Data", "200", "400", "600")  # Provide the custom labels
+#   ) +
+#   theme_minimal() +
+#   labs(title = "Number of deaths in Residential Schools by province") +
+#   theme(
+#     legend.position = "right",  # Position the legend at the bottom
+#     legend.title = element_text(size = 10, face = "bold"),  # Bold the legend title
+#     legend.text = element_text(size = 8),  # Adjust legend text size
+#     plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Center the title and make it bold
+#     plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+#     panel.grid = element_blank(),  # Remove gridlines
+#     panel.border = element_blank(),  # Remove the border around the map
+#     axis.text = element_blank(),  # Remove axis labels
+#     axis.ticks = element_blank()  # Remove axis ticks
+#   )
+
+```
+```{r}
+
+# ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
+#        aes(x = reorder(school_name, -start_year), y = start_year, color = religious_entity)) +
+#   geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
+#   geom_point(aes(y = end_year), size = 2) +  # Lollipop head
+#   geom_point(aes(y = start_year), size = 2, shape = 1) +  # Open circle at start year
+#   coord_flip() +  # Horizontal orientation
+#   theme_minimal() +
+#   labs(title = "Years of Operation of Schools",
+#        x = "School Name",
+#        y = "Year",
+#        color = "Religious Entity") +
+#   scale_color_viridis_d()
+
+```
+
+Now we can create a table that stores the yearly deaths of students for all schools. We extracted the years of the two columns we had created from the original date_of_death. If the years matched, we keep the first one (any of them would work, actually). If the years don't match, we convert it to NA.
+
+```{r}
+yearly_deaths <- expanded_data %>%
   mutate(
-    # Case 1: Year only (YYYY) → Append "-01-01"
-    date_of_death = str_replace(date_of_death, "^(\\d{4})$", "\\1-01-01"),
-    
-    # Case 2: Date range with en dash OR normal hyphen "YYYY-MM-DD – YYYY-MM-DD" → Pick randomly
-   date_of_death = if_else(
-      str_detect(date_of_death, "^(\\d{4}-\\d{2}-\\d{2})[ –-](\\d{4}-\\d{2}-\\d{2})$"),
-      sample(unlist(str_extract_all(date_of_death, "\\d{4}-\\d{2}-\\d{2}")), 1),
-      date_of_death
-    ),
-    # Case 3: Two alternative dates "YYYY-MM-DD or YYYY-MM-DD" → Pick one randomly
-    date_of_death = if_else(
-      str_detect(date_of_death, " or "), 
-      str_extract(date_of_death, "(^\\d{4}-\\d{2}-\\d{2})|(?<= or )\\d{4}-\\d{2}-\\d{2}") %>% sample(1), 
-      date_of_death
-    ),
+    year_start = year(date_start),
+    year_end = year(date_end),
+    year_of_death = if_else(year_start == year_end, year_start, NA_real_)
+  ) %>%
+  select(-year_start, -year_end)  # Remove temporary columns 
 
-    # Case 4: Year range "YYYY – YYYY" → Convert to the first day of the second year
-    date_of_death = str_replace(date_of_death, "^(\\d{4}) – (\\d{4})$", "\\2-01-01"),
+sum(is.na(yearly_deaths$year_of_death))
+# we lose 371 of 2641 students
+
+# Count the number of deaths per year
+yearly_deaths <- yearly_deaths %>%
+  drop_na() %>%
+  group_by(year_of_death) %>%
+  summarise(deaths = n())
+
+ggplot(yearly_deaths, aes(x = year_of_death, y = deaths)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 2) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_minimal() +
+  labs(title = "Yearly Deaths in Residential Schools",
+       x = "Year",
+       y = "Number of Deaths") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+```
+
+We join the data scraped from the map that we had processed earlier, with the rest of the information we have from the scraping of the web.
+
+```{r}
+deaths_data <- expanded_data %>%
+  group_by(school_name) %>%
+  summarise(deaths = n()) |>
+  ungroup()
+
+map_data_complete <- correspondences %>%
+  left_join(
+    combined_data |> select(school_name, religious_entity, school_link, location, years_operation),
+    by = c("school_name" = "school_name")
+  ) %>%
+  left_join(
+    deaths_data %>% select(school_name, deaths),
+    by = c("school_name" = "school_name")
+  ) |> 
+  mutate(deaths = as.character(deaths))
+
+map_data_complete[is.na(map_data_complete)] <- "Unknown"
+```
+
+```{r}
+# tilemap_data <- expanded_data %>%
+#   group_by(year_of_death, school_name) %>%
+#   summarise(deaths = n()) |> 
+#   ungroup()
+# 
+# ggplot(tilemap_data, aes(x = year_of_death, y = school_name, fill = deaths)) +
+#   geom_tile(color = "white") +  # White borders for better separation
+#   scale_fill_gradientn(
+#     colours = c("darkorange", "brown", "darkred", "black"),
+#     values = scales::rescale(c(0, 5, 10, 18)),  # Adjust for better contrast
+#     na.value = "gray",
+#     name = "Deaths"
+#   ) +
+#   theme_minimal() +
+#   labs(title = "Heatmap of Deaths by School and Year",
+#        x = "Year",
+#        y = "School") +
+#   theme(
+#     axis.text.y = element_text(size = 8),  # Adjust text size
+#     axis.text.x = element_text(angle = 45, hjust = 1),  # Tilt x-axis labels
+#     legend.position = "right"
+#   )
+```
+
+### Shiny app
+
+```{r}
+ui <- fluidPage(
+  titlePanel("Residential Schools analysis"),
+  
+  tabsetPanel(
+    # First tab: Bar plots
+    tabPanel("Bar plots",
+      sidebarLayout(
+        sidebarPanel(
+          # Dropdown to select which variable to display
+          selectInput("variable", "Select variable to display:", 
+                      choices = c("Number of schools" = "total_schools", 
+                                  "Total number of deaths" = "total_deaths", 
+                                  "Number of deaths per school" = "deaths_per_school"))
+        ),
+        mainPanel(
+          plotOutput("plot", height = "700px")
+        )
+      )
+    ),
     
-     # Case 5: Year-Month "YYYY-MM" → Convert to YYYY-MM-15
-    date_of_death = str_replace(date_of_death, "^(\\d{4}-\\d{2})$", "\\1-15")
+    # Second tab: Interactive map
+    tabPanel("Interactive map",
+      leafletOutput("map", height = "700px")
+    ),
+    
+    # Third tab: Static map (made sure the layout is fluid here)
+    tabPanel("Static map",
+      fluidRow(
+        column(12, plotlyOutput("static_map", height = "700px"))  # Full width
+      )
+    ),
+    
+    # Fourth tab: Years of operation
+    tabPanel("Years of operation", 
+      fluidRow(
+        column(12, plotlyOutput("lollipop_plot", height = "700px"))  # Full width
+      )
+    ),
+    
+    # Fifth tab: Yearly deaths
+    tabPanel("Yearly deaths", 
+      plotlyOutput("yearly_deaths_plot", height = "700px")  # Full width
+    )
   )
+)
 
+server <- function(input, output, session) {
+  
+  # Render bar plot based on selected variable
+  output$plot <- renderPlot({
+    selected_var <- input$variable
+
+    ggplot(relative_data, aes(x = religious_entity, y = get(selected_var))) +
+      geom_bar(stat = "identity", fill = "skyblue") +
+      labs(
+        title = paste("Bar plot of", selected_var),
+        x = "Religious Entity",
+        y = selected_var
+      ) +
+      theme(
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)
+      )
+  })
+  
+  # Render Leaflet map
+  output$map <- renderLeaflet({
+    leaflet(data = map_data_complete) %>%
+      addTiles() %>%
+      addMarkers(
+        lat = ~Latitude, 
+        lng = ~Longitude, 
+        popup = ~paste(
+          "<b>School name:</b> ", school_name, "<br>",
+          "<b>Religious entity:</b> ", religious_entity, "<br>",
+          "<b>Location:</b> ", location, "<br>",
+          "<b>Years of operation:</b> ", years_operation, "<br>",
+          "<b>Number of deaths:</b> ", deaths
+        ),
+        popupOptions = popupOptions(maxWidth = 500, maxHeight = 300)
+      )
+  })
+  
+  # Render static map
+  output$static_map <- renderPlotly({
+    p <- ggplot(deaths_per_province) +
+      geom_sf(aes(fill = deaths, text = paste("Province: ", PRENAME, "<br>Total Deaths: ", deaths)),
+              colour = "white", size = 0.1) +
+      scale_fill_gradientn(
+        colours = c("lightblue", "blue", "darkblue"), 
+        values = c(0, 0.5, 1),  
+        na.value = "gray",  
+        name = "", 
+        breaks = c(0, 200, 400, 600),
+        labels = c("No Data", "200", "400", "600")
+      ) +
+      theme_minimal() +
+      labs(title = "Number of deaths in Residential Schools by province") +
+      theme(
+        legend.position = "right",
+        legend.title = element_text(size = 10, face = "bold"),
+        legend.text = element_text(size = 8),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        plot.margin = margin(10, 10, 10, 10),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()
+      )
+    
+    ggplotly(p, tooltip = "text")
+  })
+
+  output$lollipop_plot <- renderPlotly({
+    custom_colors <- c(
+      "Catholic" = "#f596e1",  
+      "Anglican" = "#33a02c", 
+      "Methodist" = "#ff6464", 
+      "Methodist United Church" = "#cf1313",
+      "Methodist United Church Catholic" = "#990e0e",
+      "Presbyterian" = "#79bdf0",
+      "Presbyterian Church" = "#2985ca", 
+      "Presbyterian United Church" = "#185b8e",
+      "United Church" = "#66307b",  
+      "Baptist" = "#f1c232",
+      "Mennonite" = "#b15928",
+      "Non-Denominational" = "#999999" 
+    )
+  
+    p <- ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
+                aes(x = reorder(school_name, -start_year), y = start_year, 
+                    color = religious_entity, 
+                    text = paste0("School: ", school_name, 
+                                  "<br>Years of operation: ", years_operation))) +  
+      geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  
+      geom_point(aes(y = end_year), size = 2) +  
+      geom_point(aes(y = start_year), size = 2, shape = 1) +  
+      coord_flip() +  
+      theme_minimal() +
+      labs(title = "Years of operation of Residential Schools",
+           x = "School name",
+           y = "Year",
+           color = "Religious entity") +
+      scale_color_manual(values = custom_colors) +  # Apply custom colors
+      theme(axis.text.y = element_blank())  # Hides school names on y-axis
+    
+    ggplotly(p, tooltip = "text")  
+  })
+  
+  output$yearly_deaths_plot <- renderPlotly({
+    plot_ly(deaths_per_year, x = ~year_of_death, y = ~deaths, type = 'scatter', mode = 'lines+markers', 
+               text = ~paste("Year: ", year_of_death, "<br>Deaths: ", deaths),
+          hoverinfo = 'text',
+               line = list(color = 'steelblue', width = 2), 
+               marker = list(color = 'steelblue', size = 6)) %>%
+    layout(title = list(
+      text = "Yearly deaths in Residential Schools",
+      font = list(size = 14, family = 'Arial', face = 'bold')),
+           xaxis = list(title = "Year"),
+           yaxis = list(title = "Number of deaths", range = c(0, 100)),
+           hovermode = "closest")
+  })
+}
+
+shinyApp(ui, server)
 ```
 
