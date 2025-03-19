@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## First part: shools list
+## First part: schools list
 
 We are going to scrape the list of Residential Schools from the NCTR archive web. We need the school name, the years it was open, the location (Town, State) and the link to their individual page. 
 
@@ -307,6 +307,7 @@ print(combined_data)
 
 Next, we go to the Arcgis map, because Selenium can't scrape an iframe that leads to another website. We detect how many markers there are in layer 9, we remove any spinner hidden in the code, locate the popup when clicking on a marker and returning the info on Title, Longitude and Latitude.
 
+Selenium navigates to the web, then clicks on the layers button, selects only the one we are interested in, then moves the map up 250 pixels and starts scraping.
 
 ```{r}
 library(RSelenium)
@@ -325,299 +326,103 @@ remDr$open()
 remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
 Sys.sleep(5)  # Wait for page to load
 
-# Find all markers in layer 9 (escape ID properly)
+# Click on Layers button
+layers_button <- remDr$findElement(using = "css selector", "#dijit__WidgetBase_4")
+layers_button$clickElement()
+Sys.sleep(3)
+
+
+# Click on Drop Menu
+drop_menu <- remDr$findElement(using = "css selector", "#jimu_dijit_DropMenu_0")
+drop_menu$clickElement()
+Sys.sleep(3)
+
+
+# Click on the second option in the drop menu
+second_option <- remDr$findElement(using = "css selector", "#jimu_dijit_DropMenu_0 > div.drop-menu > div:nth-child(2)")
+second_option$clickElement()
+Sys.sleep(3)
+
+
+# Click on the checkbox
+checkbox <- remDr$findElement(using = "css selector", "#jimu_dijit_CheckBox_0 > div.checkbox.jimu-float-leading.jimu-icon.jimu-icon-checkbox")
+checkbox$clickElement()
+Sys.sleep(3)
+
+
+# Click on the close button
+close_button <- remDr$findElement(using = "css selector", "#_32_panel > div.jimu-panel-title.jimu-main-background.title-normal > div > div.close-btn.jimu-vcenter")
+close_button$clickElement()
+Sys.sleep(3)
+
+
+# Move the map **UP by 250 pixels**
+print("Moving map Up 250 pixels")
+map_element <- remDr$findElement(using = "css selector", "#map")
+remDr$mouseMoveToLocation(webElement = map_element)
+remDr$buttondown()
+remDr$mouseMoveToLocation(x = 0, y = 250)
+remDr$buttonup()
+Sys.sleep(2)  # Allow time for the map to move
+
+# 📸 Screenshot after moving the map
+remDr$screenshot(file = "step_7_map_moved.png")
+
+# **SCRAPING MARKERS WITH ZOOM-IN HANDLING**
+school_data <- data.frame(Name = character(), Latitude = numeric(), Longitude = numeric(), stringsAsFactors = FALSE)
+
 layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
 print(paste("Layer 9 Markers found:", length(layer_9_markers)))
 
-
-# 🚀 **Remove Hidden Spinner (Preemptive)**
-remDr$executeScript("
-  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
-")
-Sys.sleep(5) 
-
 for (marker in layer_9_markers) {
-  Sys.sleep(2)  # Wait a bit before clicking
+  Sys.sleep(2)
   marker$clickElement()
-  
-  # Ensure no popups are blocking
-  close_buttons <- remDr$findElements(using = "css selector", "div.esriMobileNavigationBar img")
-  if (length(close_buttons) > 0) {
-    close_buttons[[1]]$clickElement()
-    Sys.sleep(2)
-  }
+  Sys.sleep(5)
 
-  # Remove spinner if it's back
-  spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
-  if (length(spinners) > 0) {
-    remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
-    Sys.sleep(1)
-  }
-
-  # Scroll to marker
-  remDr$executeScript("arguments[0].scrollIntoView();", list(marker))
-  Sys.sleep(1)
-
-  # 🚀 **Remove Hidden Spinner Again**
-  remDr$executeScript("
-    Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
-  ")
-
-  # Locate the popup (single instance, since it updates content)
-  popup <- remDr$findElement(using = "css selector", "div.esriPopupWrapper")
-
+  # 📸 Screenshot after clicking marker
   remDr$screenshot(display = TRUE)  # Show image in RStudio Viewer
 
-  # Extract the title from the header
-  title_element <- popup$findChildElement(using = "css selector", ".header")
-  title <- title_element$getElementText()[[1]]
-
-  # Find all table rows in the popup
-  rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
-
-  latitude <- "N/A"
-  longitude <- "N/A"
-
-  for (row in rows) {
-    # Get columns (td elements) in each row
-    cols <- row$findChildElements(using = "css selector", "td")
-
-    if (length(cols) >= 2) {
-      name_element <- cols[[1]]  # First column (attribute name)
-      value_element <- cols[[2]] # Second column (attribute value)
-
-      name_text <- name_element$getElementText()[[1]]
-      value_text <- value_element$getElementText()[[1]]
-
-      if (grepl("Latitude", name_text, ignore.case = TRUE)) {
-        latitude <- value_text
-      } else if (grepl("Longitude", name_text, ignore.case = TRUE)) {
-        longitude <- value_text
-      }
-    }
-  }
-
-  print(paste("Title:", title, "Latitude:", latitude, "Longitude:", longitude))
-
-# ✅ **Close the Popup Before Moving to Next Marker**
-tryCatch({
-  close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
-  close_button$clickElement()
-  Sys.sleep(2)  # Allow time for the popup to close
-}, error = function(e) {
-  print("Popup close button not found or not clickable, moving on...")
-})
-
-}
-
-  # Save data
-school_data <- data.frame(Name = character(), Latitude = numeric(), Longitude = numeric(), stringsAsFactors = FALSE)
-
-# Close the session
-remDr$close()
-
-
-```
-
-
-This next part i dont know what its for, tbh
-
-```{r}
-library(RSelenium)
-library(stringr)
-
-# Connect to Selenium running in Docker
-remDr <- remoteDriver(
-  remoteServerAddr = "localhost",
-  port = 4449,
-  browserName = "firefox"
-)
-
-remDr$open()
-
-# Navigate to the ArcGIS map
-remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
-Sys.sleep(5)  # Wait for page to load
-
-# Find all markers in layer 9 (escape ID properly)
-layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
-print(paste("Layer 9 Markers found:", length(layer_9_markers)))
-
-# ✅ Initialize dataframe BEFORE the loop
-school_data <- data.frame(Name = character(), Latitude = numeric(), Longitude = numeric(), stringsAsFactors = FALSE)
-
-# 🚀 **Remove Hidden Spinner (Preemptive)**
-remDr$executeScript("
-  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
-")
-Sys.sleep(5) 
-
-for (marker in layer_9_markers) {
-  Sys.sleep(2)  # Wait a bit before clicking
-  marker$clickElement()
-  
-  # Ensure no popups are blocking
-  close_buttons <- remDr$findElements(using = "css selector", "div.esriMobileNavigationBar img")
-  if (length(close_buttons) > 0) {
-    close_buttons[[1]]$clickElement()
-    Sys.sleep(2)
-  }
-
-  # Remove spinner if it's back
-  spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
-  if (length(spinners) > 0) {
-    remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
-    Sys.sleep(1)
-  }
-
-  # Scroll to marker
-  remDr$executeScript("arguments[0].scrollIntoView();", list(marker))
-  Sys.sleep(1)
-
-  # 🚀 **Remove Hidden Spinner Again**
-  remDr$executeScript("
-    Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
-  ")
-
-  # Locate the popup (single instance, since it updates content)
-  popup <- remDr$findElement(using = "css selector", "div.esriPopupWrapper")
-
-
-  # Extract the title from the header
-  title_element <- popup$findChildElement(using = "css selector", ".header")
-  title <- title_element$getElementText()[[1]]
-
-  # Find all table rows in the popup
-  rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
-
-  latitude <- "N/A"
-  longitude <- "N/A"
-
-  for (row in rows) {
-    # Get columns (td elements) in each row
-    cols <- row$findChildElements(using = "css selector", "td")
-
-    if (length(cols) >= 2) {
-      name_element <- cols[[1]]  # First column (attribute name)
-      value_element <- cols[[2]] # Second column (attribute value)
-
-      name_text <- name_element$getElementText()[[1]]
-      value_text <- value_element$getElementText()[[1]]
-
-      if (grepl("Latitude", name_text, ignore.case = TRUE)) {
-        latitude <- value_text
-      } else if (grepl("Longitude", name_text, ignore.case = TRUE)) {
-        longitude <- value_text
-      }
-    }
-  }
-
-  # ✅ **Append the extracted data to the dataframe**
-  school_data <- rbind(school_data, data.frame(Name = title, Latitude = latitude, Longitude = longitude, stringsAsFactors = FALSE))
-
-  # ✅ **Close the Popup Before Moving to Next Marker**
-  tryCatch({
-    close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
-    close_button$clickElement()
-    Sys.sleep(2)  # Allow time for the popup to close
+  popup <- tryCatch({
+    remDr$findElement(using = "css selector", "div.esriPopupWrapper")
   }, error = function(e) {
-    print("Popup close button not found or not clickable, moving on...")
+    return(NULL)
   })
-}
 
-# ✅ Print final dataframe
-print(school_data)
-
-# ✅ Save dataframe to CSV file
-write.csv(school_data, "school_data.csv", row.names = FALSE)
-
-# Close the session
-remDr$close()
-
-```
-
-
-Works but we have 52 missing data when we shouldn't. We try a new approach scrolling the map. Printing each result in the console and screenshoting every time it scrolls.
-
-```{r}
-library(RSelenium)
-library(stringr)
-
-# Connect to Selenium running in Docker
-remDr <- remoteDriver(
-  remoteServerAddr = "localhost",
-  port = 4449,
-  browserName = "firefox"
-)
-
-remDr$open()
-
-# Navigate to the ArcGIS map
-remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
-Sys.sleep(5)  # Wait for page to load
-
-# Remove hidden spinners
-remDr$executeScript("
-  Array.from(document.querySelectorAll('.spinner.hidden')).forEach(el => el.remove());
-")
-Sys.sleep(5) 
-
-# Function to take a screenshot
-take_screenshot <- function(filename) {
-  screenshot_file <- paste0(filename, ".png")
-  remDr$screenshot(file = screenshot_file)
-  print(paste("📸 Screenshot saved:", screenshot_file))
-}
-
-# Function to move (pan) the map
-move_map <- function(x_offset, y_offset, step_name) {
-  print(paste("🗺️ Moving map:", step_name))
-  remDr$executeScript("
-    let map = document.querySelector('.esriViewRoot'); 
-    map.scrollBy(arguments[0], arguments[1]);", 
-    list(x_offset, y_offset)
-  )
-  Sys.sleep(3)  # Allow time for map to load
-  take_screenshot(paste0("map_moved_", step_name))
-}
-
-# Define scroll movements
-movements <- list(
-  list(x = 500, y = 0, name = "Right"),
-  list(x = -1000, y = 0, name = "Left"),
-  list(x = 500, y = 500, name = "Down"),
-  list(x = 500, y = -1000, name = "Up")
-)
-
-# Function to scrape markers
-scrape_markers <- function() {
-  layer_9_markers <- remDr$findElements(using = "css selector", "#\\31 94bd5e080b-layer-9_layer > image")
-  print(paste("🔍 Total markers found:", length(layer_9_markers)))
-
-  for (marker in layer_9_markers) {
-    Sys.sleep(2)
-    marker$clickElement()
+  # If popup is missing, zoom in, retry, and then zoom out
+  if (is.null(popup)) {
+    print("Popup not found, zooming in...")
     
-    # Remove spinner if it reappears
-    spinners <- remDr$findElements(using = "css selector", ".spinner.hidden")
-    if (length(spinners) > 0) {
-      remDr$executeScript("document.querySelectorAll('.spinner.hidden').forEach(el => el.remove());")
-      Sys.sleep(1)
+    zoom_in_button <- remDr$findElement(using = "css selector", ".esriSimpleSliderIncrementButton")
+    zoom_in_button$clickElement()
+    Sys.sleep(3)
+
+    marker$clickElement()
+    Sys.sleep(3)
+
+    # 📸 Screenshot after zooming in
+    remDr$screenshot(display = TRUE)
+
+    popup <- tryCatch({
+      remDr$findElement(using = "css selector", "div.esriPopupWrapper")
+    }, error = function(e) {
+      return(NULL)
+    })
+
+    # Zoom back out if we zoomed in
+    if (!is.null(popup)) {
+      zoom_out_button <- remDr$findElement(using = "css selector", ".esriSimpleSliderDecrementButton")
+      zoom_out_button$clickElement()
+      Sys.sleep(3)
+
+      # 📸 Screenshot after zooming out
+      remDr$screenshot(display = TRUE)
     }
+  }
 
-    Sys.sleep(2)
-    popups <- remDr$findElements(using = "css selector", "div.esriPopupWrapper")
-
-    if (length(popups) == 0) {
-      print("⚠️ Popup not found. Skipping marker.")
-      next
-    }
-
-    popup <- popups[[1]]
+  if (!is.null(popup)) {
     title_element <- popup$findChildElement(using = "css selector", ".header")
     title <- title_element$getElementText()[[1]]
 
-    # Find all table rows in the popup
     rows <- popup$findChildElements(using = "css selector", ".attrTable tr")
 
     latitude <- "N/A"
@@ -625,6 +430,7 @@ scrape_markers <- function() {
 
     for (row in rows) {
       cols <- row$findChildElements(using = "css selector", "td")
+
       if (length(cols) >= 2) {
         name_text <- cols[[1]]$getElementText()[[1]]
         value_text <- cols[[2]]$getElementText()[[1]]
@@ -637,121 +443,43 @@ scrape_markers <- function() {
       }
     }
 
-    print(paste("✅ Title:", title, "Latitude:", latitude, "Longitude:", longitude))
+    print(paste("Title:", title, "Latitude:", latitude, "Longitude:", longitude))
 
-    # Close the popup
+    # Store data
+    school_data <- rbind(school_data, data.frame(Name = title, Latitude = as.numeric(latitude), Longitude = as.numeric(longitude), stringsAsFactors = FALSE))
+
+    # Close popup before moving to the next marker
     tryCatch({
       close_button <- remDr$findElement(using = "css selector", "div.titleButton.close")
       close_button$clickElement()
       Sys.sleep(2)
     }, error = function(e) {
-      print("Popup close button not found. Skipping closure.")
+      print("Popup close button not found, moving on...")
     })
   }
 }
 
-# 🚀 **Scrape first pass**
-scrape_markers()
-
-# 🚀 **Scroll the map in all directions**
-for (move in movements) {
-  move_map(move$x, move$y, move$name)
-  scrape_markers()  # Try scraping again after each movement
-}
-
-# 🚀 **Final pass to ensure all markers were scraped**
-scrape_markers()
-
 # Save data
-write.csv(scraped_markers, "scraped_markers.csv", row.names = FALSE)
+write.csv(school_data, "school_data.csv", row.names = FALSE)
 
-# Close the session
+# Close session
 remDr$close()
 
 
 ```
-
+Count how many NAs we have
 
 ```{r}
-library(RSelenium)
-library(stringr)
 
-# Connect to Selenium running in Docker
-remDr <- remoteDriver(
-  remoteServerAddr = "localhost",
-  port = 4449,
-  browserName = "firefox"
-)
+# Count NAs in each column
+na_count_per_column <- colSums(is.na(school_data))
+print("NA count per column:")
+print(na_count_per_column)
 
-remDr$open()
-
-# Navigate to the ArcGIS map
-remDr$navigate("https://www.arcgis.com/apps/webappviewer/index.html?id=0cc12b7f9f434dbaa7c2815aea84606e/")
-Sys.sleep(5)  # Wait for page to load
-
-
-# Locate the Map Element
-mapElement <- remDr$findElement(using = "xpath", value = "//*[@id='map']")  # Adjust the XPath as necessary
-
-# Define Drag Offsets for each direction
-drag_offsets <- list(
-    list(startX = 0, startY = 0, endX = 500, endY = 0),   # Right
-    list(startX = 500, startY = 0, endX = 500, endY = 500), # Down
-    list(startX = 500, startY = 500, endX = 0, endY = 500), # Left
-    list(startX = 0, startY = 500, endX = 0, endY = 0)      # Up
-)
-
-# Loop Through Offsets and Take Screenshots
-for (i in seq_along(drag_offsets)) {
-    offset <- drag_offsets[[i]]
-    
-    # Take Initial Screenshot
-    remDr$screenshot(file = paste0("before_drag_", i, ".png"))
-    print(paste("📸 Screenshot saved: before_drag_", i, ".png", sep = ""))
-
-    # Define the JavaScript for dragging
-    drag_script <- "
-    var map = arguments[0];
-    var mouseDownEvent = new MouseEvent('mousedown', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-        clientX: arguments[1],
-        clientY: arguments[2]
-    });
-    map.dispatchEvent(mouseDownEvent);
-
-    var mouseMoveEvent = new MouseEvent('mousemove', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-        clientX: arguments[3],
-        clientY: arguments[4]
-    });
-    map.dispatchEvent(mouseMoveEvent);
-
-    var mouseUpEvent = new MouseEvent('mouseup', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-        clientX: arguments[3],
-        clientY: arguments[4]
-    });
-    map.dispatchEvent(mouseUpEvent);
-    "
-
-    # Execute the drag script with offsets
-    remDr$executeScript(drag_script, list(mapElement, offset$startX, offset$startY, offset$endX, offset$endY))
-
-    # Take Screenshot After Dragging
-    remDr$screenshot(file = paste0("after_drag_", i, ".png"))
-    print(paste("📸 Screenshot saved: after_drag_", i, ".png", sep = ""))
-}
-
-
-remDr$close()
-
-
+# Count total NAs in the entire dataframe
+total_na_count <- sum(is.na(school_data))
+print(paste("Total NAs in the dataframe:", total_na_count))
 
 ```
+
 
