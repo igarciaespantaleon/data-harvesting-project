@@ -34,6 +34,7 @@ library(canadianmaps)
 library(shiny)
 library(leaflet)
 library(plotly)
+library(DT)
 
 ```
 
@@ -904,7 +905,15 @@ We decided to work with year-month format. Our goal was to be able to identify t
 In the next chunk we added comments for all steps of this process.
 
 ```{r}
-library(purrr)
+# Save date of death in the original format to use later
+original_death_date <- expanded_data |> 
+  select(full_name, date_of_death) |> 
+  rename(
+    original_death_date = date_of_death
+  )
+
+
+# Transformations:
 
 expanded_data <- expanded_data %>%
   mutate(
@@ -1019,7 +1028,11 @@ And calculated the deaths per each province.
 deaths_per_province <- expanded_data %>%
   filter(!is.na(province)) %>%
   group_by(province) %>%
-  summarise(deaths = n())
+  summarise(
+    total_deaths = n(),
+    total_schools = n_distinct(school_name)
+  ) %>%
+  mutate(deaths_per_school = total_deaths / total_schools)
 ```
 
 We then merged this with the PROV object of the canadianmaps package so we could build a map for province data. 
@@ -1061,91 +1074,6 @@ church_bind <- combined_data %>%
 church_data <- bind_rows(church_data, church_bind)
 ```
 
-Here are some of the plots that we can create with this table:
-
-```{r}
-
-# ggplot(church_data, aes(x = reorder(religious_entity, total_deaths), y = total_deaths, fill = religious_entity)) +
-#   geom_col(show.legend = FALSE) +
-#   coord_flip() +  # Para facilitar la lectura
-#   labs(
-#     title = "Total number of deaths by religious entity",
-#     x = "",
-#     y = ""
-#   ) +
-#   theme_minimal()
-# 
-# 
-# 
-# ggplot(church_data, aes(x = reorder(religious_entity, deaths_per_school), y = deaths_per_school, fill = religious_entity)) +
-#   geom_col(show.legend = FALSE) +
-#   coord_flip() +
-#   labs(
-#     title = "Deaths per school by religious entity",
-#     x = "",
-#     y = ""
-#   ) +
-#   theme_minimal()
-# 
-# 
-# 
-# ggplot(church_data, aes(x = reorder(religious_entity, total_schools), y = total_schools, fill = religious_entity)) +
-#   geom_col(show.legend = FALSE) +
-#   coord_flip() +
-#   labs(
-#     title = "Number of schools by religious entity",
-#     x = "",
-#     y = ""
-#   ) +
-#   theme_minimal()
-
-```
-
-Using the table created in the previous section (deaths_per_province), we can now plot a map:
-
-```{r}
-# ggplot(deaths_per_province) +
-#   geom_sf(aes(fill = deaths), colour = "white", size = 0.1) +
-#   scale_fill_gradientn(
-#     colours = c("lightblue", "blue", "darkblue"),  # Specify the gradient colors
-#     values = c(0, 0.5, 1),  # Adjust these to match the range of your data
-#     na.value = "gray",  # Gray for NA values
-#     name = "", 
-#     breaks = c(0, 200, 400, 600),  # Define breaks where you want labels
-#     labels = c("No Data", "200", "400", "600")  # Provide the custom labels
-#   ) +
-#   theme_minimal() +
-#   labs(title = "Number of deaths in Residential Schools by province") +
-#   theme(
-#     legend.position = "right",  # Position the legend at the bottom
-#     legend.title = element_text(size = 10, face = "bold"),  # Bold the legend title
-#     legend.text = element_text(size = 8),  # Adjust legend text size
-#     plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),  # Center the title and make it bold
-#     plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
-#     panel.grid = element_blank(),  # Remove gridlines
-#     panel.border = element_blank(),  # Remove the border around the map
-#     axis.text = element_blank(),  # Remove axis labels
-#     axis.ticks = element_blank()  # Remove axis ticks
-#   )
-
-```
-```{r}
-
-# ggplot(combined_data %>% filter(!is.na(start_year) & !is.na(end_year)), 
-#        aes(x = reorder(school_name, -start_year), y = start_year, color = religious_entity)) +
-#   geom_segment(aes(xend = school_name, yend = end_year), size = 1) +  # Line from start to end year
-#   geom_point(aes(y = end_year), size = 2) +  # Lollipop head
-#   geom_point(aes(y = start_year), size = 2, shape = 1) +  # Open circle at start year
-#   coord_flip() +  # Horizontal orientation
-#   theme_minimal() +
-#   labs(title = "Years of Operation of Schools",
-#        x = "School Name",
-#        y = "Year",
-#        color = "Religious Entity") +
-#   scale_color_viridis_d()
-
-```
-
 Now we can create a table that stores the yearly deaths of students for all schools. We extracted the years of the two columns we had created from the original date_of_death. If the years matched, we keep the first one (any of them would work, actually). If the years don't match, we convert it to NA.
 
 ```{r}
@@ -1165,16 +1093,6 @@ yearly_deaths <- yearly_deaths %>%
   drop_na() %>%
   group_by(year_of_death) %>%
   summarise(deaths = n())
-
-ggplot(yearly_deaths, aes(x = year_of_death, y = deaths)) +
-  geom_line(color = "blue", size = 1) +
-  geom_point(color = "red", size = 2) +
-  scale_y_continuous(limits = c(0, 100)) +
-  theme_minimal() +
-  labs(title = "Yearly Deaths in Residential Schools",
-       x = "Year",
-       y = "Number of Deaths") +
-  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
 ```
 
 We join the data scraped from the map that we had processed earlier, with the rest of the information we have from the scraping of the web.
@@ -1199,29 +1117,21 @@ map_data_complete <- correspondences %>%
 map_data_complete[is.na(map_data_complete)] <- "Unknown"
 ```
 
+Lastly, we created the data table that we want to display on our shiny app.
+
 ```{r}
-# tilemap_data <- expanded_data %>%
-#   group_by(year_of_death, school_name) %>%
-#   summarise(deaths = n()) |> 
-#   ungroup()
-# 
-# ggplot(tilemap_data, aes(x = year_of_death, y = school_name, fill = deaths)) +
-#   geom_tile(color = "white") +  # White borders for better separation
-#   scale_fill_gradientn(
-#     colours = c("darkorange", "brown", "darkred", "black"),
-#     values = scales::rescale(c(0, 5, 10, 18)),  # Adjust for better contrast
-#     na.value = "gray",
-#     name = "Deaths"
-#   ) +
-#   theme_minimal() +
-#   labs(title = "Heatmap of Deaths by School and Year",
-#        x = "Year",
-#        y = "School") +
-#   theme(
-#     axis.text.y = element_text(size = 8),  # Adjust text size
-#     axis.text.x = element_text(angle = 45, hjust = 1),  # Tilt x-axis labels
-#     legend.position = "right"
-#   )
+shiny_data_table <- expanded_data |> 
+  select(-c(date_of_death, date_start, date_end, province)) |> 
+  left_join(original_death_date, by = "full_name") %>%
+  left_join((combined_data %>%
+              select(school_link, location)), by = "school_link") |> 
+  rename(
+    "School name" = school_name,
+    "Religious entity" = religious_entity,
+    "Full name" = full_name,
+    "Date of death" = original_death_date,
+    "Location" = location,
+  )
 ```
 
 ### Shiny app
@@ -1231,12 +1141,13 @@ ui <- fluidPage(
   titlePanel("Residential Schools analysis"),
   
   tabsetPanel(
+    
     # First tab: Bar plots
     tabPanel("Bar plots",
       sidebarLayout(
         sidebarPanel(
           # Dropdown to select which variable to display
-          selectInput("variable", "Select variable to display:", 
+          selectInput("variable", "Select data to display:", 
                       choices = c("Number of schools" = "total_schools", 
                                   "Total number of deaths" = "total_deaths", 
                                   "Number of deaths per school" = "deaths_per_school"))
@@ -1247,17 +1158,26 @@ ui <- fluidPage(
       )
     ),
     
-    # Second tab: Interactive map
+        # Second tab: Static maps 
+    tabPanel("Static map",
+      fluidRow(
+        column(4, 
+          radioButtons("map_variable", "Select data to display:", 
+            choices = c("Number of schools" = "total_schools", 
+                       "Total number of deaths" = "total_deaths", 
+                         "Number of deaths per school" = "deaths_per_school"),
+                       selected = "total_schools")
+        ),
+        column(8, plotlyOutput("static_map", height = "700px"))
+      )
+    ),
+    
+    # Third tab: Interactive map
     tabPanel("Interactive map",
       leafletOutput("map", height = "700px")
     ),
     
-    # Third tab: Static map (made sure the layout is fluid here)
-    tabPanel("Static map",
-      fluidRow(
-        column(12, plotlyOutput("static_map", height = "700px"))  # Full width
-      )
-    ),
+
     
     # Fourth tab: Years of operation
     tabPanel("Years of operation", 
@@ -1269,9 +1189,15 @@ ui <- fluidPage(
     # Fifth tab: Yearly deaths
     tabPanel("Yearly deaths", 
       plotlyOutput("yearly_deaths_plot", height = "700px")  # Full width
-    )
+    ),
+    
+    # Sixth tab: Data table
+    tabPanel("Data table", 
+      fluidRow(
+        column(12, DTOutput("data_table"))
   )
 )
+))
 
 server <- function(input, output, session) {
   
@@ -1279,8 +1205,9 @@ server <- function(input, output, session) {
   output$plot <- renderPlot({
     selected_var <- input$variable
 
-    ggplot(relative_data, aes(x = religious_entity, y = get(selected_var))) +
+    ggplot(church_data, aes(x = religious_entity, y = get(selected_var))) +
       geom_bar(stat = "identity", fill = "skyblue") +
+      geom_text(aes(label = round(get(selected_var), 1)), vjust = -0.5, size = 5) + 
       labs(
         title = paste("Bar plot of", selected_var),
         x = "Religious Entity",
@@ -1293,6 +1220,41 @@ server <- function(input, output, session) {
         axis.text.y = element_text(size = 12)
       )
   })
+
+  
+  # Render static map
+  output$static_map <- renderPlotly({
+  p <- ggplot(deaths_per_province) +
+    geom_sf(aes(fill = .data[[input$map_variable]], 
+                text = paste("Province: ", .data[["PRENAME"]], "<br>",
+                             "Total deaths: ", .data[["total_deaths"]], "<br>",
+                             "Total schools: ", .data[["total_schools"]], "<br>",
+                             "Deaths per school: ", round(.data[["deaths_per_school"]], 2))),
+            colour = "white", size = 0.1) +
+    scale_fill_gradientn(
+      colours = c("lightblue", "blue", "darkblue"), 
+      values = c(0, 0.5, 1),  
+      na.value = "gray",  
+      name = input$map_variable, 
+      breaks = c(0, 200, 400, 600),
+      labels = c("No Data", "200", "400", "600")
+    ) +
+    theme_minimal() +
+    labs(title = "Analysis of Residential Schools by province") +
+    theme(
+      legend.position = "none",
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 8),
+      plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+      plot.margin = margin(10, 10, 10, 10),
+      panel.grid = element_blank(),
+      panel.border = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank()
+    )
+
+  ggplotly(p, tooltip = "text")
+})
   
   # Render Leaflet map
   output$map <- renderLeaflet({
@@ -1312,36 +1274,7 @@ server <- function(input, output, session) {
       )
   })
   
-  # Render static map
-  output$static_map <- renderPlotly({
-    p <- ggplot(deaths_per_province) +
-      geom_sf(aes(fill = deaths, text = paste("Province: ", PRENAME, "<br>Total Deaths: ", deaths)),
-              colour = "white", size = 0.1) +
-      scale_fill_gradientn(
-        colours = c("lightblue", "blue", "darkblue"), 
-        values = c(0, 0.5, 1),  
-        na.value = "gray",  
-        name = "", 
-        breaks = c(0, 200, 400, 600),
-        labels = c("No Data", "200", "400", "600")
-      ) +
-      theme_minimal() +
-      labs(title = "Number of deaths in Residential Schools by province") +
-      theme(
-        legend.position = "right",
-        legend.title = element_text(size = 10, face = "bold"),
-        legend.text = element_text(size = 8),
-        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-        plot.margin = margin(10, 10, 10, 10),
-        panel.grid = element_blank(),
-        panel.border = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank()
-      )
-    
-    ggplotly(p, tooltip = "text")
-  })
-
+  # Render lollipop chart
   output$lollipop_plot <- renderPlotly({
     custom_colors <- c(
       "Catholic" = "#f596e1",  
@@ -1379,7 +1312,7 @@ server <- function(input, output, session) {
   })
   
   output$yearly_deaths_plot <- renderPlotly({
-    plot_ly(deaths_per_year, x = ~year_of_death, y = ~deaths, type = 'scatter', mode = 'lines+markers', 
+    plot_ly(yearly_deaths, x = ~year_of_death, y = ~deaths, type = 'scatter', mode = 'lines+markers', 
                text = ~paste("Year: ", year_of_death, "<br>Deaths: ", deaths),
           hoverinfo = 'text',
                line = list(color = 'steelblue', width = 2), 
@@ -1391,6 +1324,16 @@ server <- function(input, output, session) {
            yaxis = list(title = "Number of deaths", range = c(0, 100)),
            hovermode = "closest")
   })
+  
+output$data_table <- renderDT({
+  datatable(shiny_data_table %>% 
+              mutate(`School name` = paste0("<a href='", school_link, 
+                                            "' target='_blank'>", `School name`, "</a>")) %>%
+              select(-school_link),  # Remove school_link column
+            escape = FALSE,   # Allow HTML links
+            options = list(pageLength = 10), 
+            rownames = FALSE)
+})
 }
 
 shinyApp(ui, server)
