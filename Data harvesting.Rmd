@@ -1,6 +1,6 @@
 ---
 title: "Data Harvesting"
-author: "Rocío Galeote"
+author: "Rocío Galeote and Irene García"
 date: "2025-01-30"
 output: html_document
 ---
@@ -38,7 +38,21 @@ library(DT)
 
 ```
 
-## First part: schools list
+
+## Introduction
+
+## Scraping
+
+The **Residential School System** in Canada was a network of government-funded, church-run boarding schools that operated from the late 19th century to 1996. Its goal was to forcibly assimilate Indigenous children into Euro-Canadian culture by removing them from their families, forbidding their languages and traditions, and imposing Christian and Western education.
+
+More than 150,000 First Nations, Métis, and Inuit children were taken from their homes, often against their parents' will. Thousands of children died due to harsh conditions, disease, and mistreatment.
+
+The **Truth and Reconciliation Commission (TRC)** documented the trauma and legacy of residential schools, which continue to impact Indigenous communities today.
+
+This project automates the process of extracting location-based data from the interactive ArcGIS map that the NCTR uses in its memorial website. By leveraging Selenium in R, we systematically navigate the web interface, enable relevant data layers, and scrape geospatial data points. The ultimate goal is to enhance visualizations and conduct analysis based on the recovered data.
+
+
+### First part: schools list
 
 We are going to scrape the list of Residential Schools from the NCTR archive web. We need the school name, the years it was open, the location (Town, State) and the link to their individual page. 
 
@@ -66,14 +80,14 @@ school_details <- page %>%
   html_text(trim = TRUE)
 
 # Combine into a data frame
-school_data <- tibble(
+school_info <- tibble(
   school_name = school_names,
   school_link = school_links,
   details = school_details
 )
 
 # Print the results
-print(school_data)
+print(school_info)
 
 
 ```
@@ -135,45 +149,6 @@ write.csv(all_schools, "residential_schools.csv", row.names = FALSE)
 
 Now we have the school name, the link to each of them, the state and years of operation. But we also want to know the religious affiliation and the table of deceased students (if they have the info), which is contained within the individual link of each school.
 
-```{r}
-
-# Define a single school URL for testing
-schooltest_url <- "https://nctr.ca/residential-schools/alberta/whitefish-lake-st-andrews/"
-
-# Read the page
-page <- tryCatch({
-  read_html(schooltest_url)
-}, error = function(e) {
-  message("Error fetching page: ", schooltest_url)
-  return(NULL)
-})
-
-if (!is.null(page)) {
-  # Extract Religious Entity
-  religious_entity <- page %>%
-    html_nodes("p.max-w-2xl span.font-normal") %>% 
-    html_text(trim = TRUE)
-  
-  # Extract Student Memorial Table
-  table_node <- page %>% html_nodes("figure.wp-block-table table")
-
-  if (length(table_node) > 0) {
-    table_data <- table_node %>% 
-      html_table(fill = TRUE) %>% 
-      .[[1]]  # Extract first table if multiple exist
-  } else {
-    table_data <- tibble(Name = NA, Date_of_Death = NA)  # Placeholder if no table
-  }
-
-  # Print results
-  print(glue::glue("Religious Entity: {religious_entity}"))
-  print(table_data)
-}
-
-```
-
-
-Now with all
 
 ```{r}
 # Function to scrape a single school's details using its link
@@ -281,27 +256,31 @@ We're interested in seeing how many years each school was operating, so we extra
 
 ```{r}
 
+library(dplyr)
+library(stringr)
+
 combined_data <- combined_data %>%
-  mutate(
-    # Extract the first and last year as numeric values
+  dplyr::mutate(
+    # Extract the first and last year, ensuring only digits are selected
     start_year = as.numeric(str_extract(years_operation, "^\\d{4}")),
-    end_year = as.numeric(str_extract(years_operation, "\\d{4}$")),
+    end_year = as.numeric(str_extract(years_operation, "(\\d{4})$")),
     
-    # Calculate years in operation (if both values exist)
+    # Handle cases where either start_year or end_year is NA
     years_active = ifelse(!is.na(start_year) & !is.na(end_year),
                           end_year - start_year,
                           NA)
-  ) %>%
+  )
 
-
-# View the cleaned data
-print(combined_data)
+# View problematic rows (optional debugging step)
+combined_data %>%
+  filter(is.na(start_year) | is.na(end_year)) %>%
+  print()
 
 ```
 
 
 
-## Second part: Interactive map
+### Second part: Interactive map
 
 Next, we go to the Arcgis map, because Selenium can't scrape an iframe that leads to another website. We detect how many markers there are in layer 9, we remove any spinner hidden in the code, locate the popup when clicking on a marker and returning the info on Title, Longitude and Latitude.
 
@@ -375,9 +354,6 @@ for (marker in layer_9_markers) {
   Sys.sleep(2)
   marker$clickElement()
   Sys.sleep(5)
-
-  # 📸 Screenshot after clicking marker
-  remDr$screenshot(display = TRUE)  # Show image in RStudio Viewer
 
   popup <- tryCatch({
     remDr$findElement(using = "css selector", "div.esriPopupWrapper")
@@ -850,6 +826,15 @@ map_data_complete <- correspondences %>%
   mutate(deaths = as.character(deaths))
 
 map_data_complete[is.na(map_data_complete)] <- "Unknown"
+
+# Also splitting the years_operation variable into two
+map_data_complete <- map_data_complete |> 
+  mutate(
+    # Extract the first and last year as numeric values
+    start_year = as.numeric(str_extract(years_operation, "^\\d{4}")),
+    end_year = as.numeric(str_extract(years_operation, "\\d{4}$"))
+  )
+
 ```
 
 Lastly, we created the data table that we want to display on our shiny app.
@@ -867,6 +852,7 @@ shiny_data_table <- expanded_data |>
     "Date of death" = original_death_date,
     "Location" = location,
   )
+
 ```
 
 ### Shiny app
@@ -908,9 +894,21 @@ ui <- fluidPage(
     ),
     
     # Third tab: Interactive map
-    tabPanel("Interactive map",
-      leafletOutput("map", height = "700px")
+tabPanel("Interactive map",
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("selected_year", "Select Year:", 
+                  min = min(map_data_complete$start_year, na.rm = TRUE), 
+                  max = max(map_data_complete$end_year, na.rm = TRUE), 
+                  value = min(map_data_complete$start_year, na.rm = TRUE),
+                  step = 1,
+                  animate = list(interval = 200))
     ),
+    mainPanel(
+      leafletOutput("map", height = "700px")
+    )
+  )
+),
     
 
     
@@ -992,24 +990,37 @@ server <- function(input, output, session) {
 })
   
   # Render Leaflet map
-  output$map <- renderLeaflet({
-    leaflet(data = map_data_complete) %>%
-      addTiles() %>%
-      addMarkers(
-        lat = ~Latitude, 
-        lng = ~Longitude, 
-        popup = ~paste(
-          "<b>School name:</b> ", school_name, "<br>",
-          "<b>Religious entity:</b> ", religious_entity, "<br>",
-          "<b>Location:</b> ", location, "<br>",
-          "<b>Years of operation:</b> ", years_operation, "<br>",
-          "<b>Number of deaths:</b> ", deaths
-        ),
-        popupOptions = popupOptions(maxWidth = 500, maxHeight = 300)
-      )
-  })
+    filtered_data <- reactive({
+      map_data_complete %>%
+        filter(start_year <= input$selected_year & end_year >= input$selected_year)
+    })
+    
+    output$map <- renderLeaflet({
+  leaflet() %>%
+    addTiles() %>%
+    setView(lng = -98.35, lat = 56.13, zoom = 4)
+})
+    
+    observe({
+      req(nrow(filtered_data()) > 0)
+      
+      leafletProxy("map", data = filtered_data()) %>%
+        clearMarkers() %>%
+        addMarkers(
+          lat = ~Latitude, 
+          lng = ~Longitude, 
+          popup = ~paste(
+            "<b>School name:</b> ", school_name, "<br>",
+            "<b>Religious entity:</b> ", religious_entity, "<br>",
+            "<b>Location:</b> ", location, "<br>",
+            "<b>Years of operation:</b> ", years_operation, "<br>",
+            "<b>Number of deaths:</b> ", deaths
+          ),
+          popupOptions = popupOptions(maxWidth = 500, maxHeight = 300)
+        )
+    })
   
-  # Render lollipop chart
+ # Render lollipop chart
   output$lollipop_plot <- renderPlotly({
     custom_colors <- c(
       "Catholic" = "#f596e1",  
@@ -1045,6 +1056,7 @@ server <- function(input, output, session) {
     
     ggplotly(p, tooltip = "text")  
   })
+
   
   output$yearly_deaths_plot <- renderPlotly({
     plot_ly(yearly_deaths, x = ~year_of_death, y = ~deaths, type = 'scatter', mode = 'lines+markers', 
@@ -1062,8 +1074,8 @@ server <- function(input, output, session) {
   
 output$data_table <- renderDT({
   datatable(shiny_data_table %>% 
-              mutate(`School name` = paste0("<a href='", school_link, 
-                                            "' target='_blank'>", `School name`, "</a>")) %>%
+              mutate(`School name`= paste0("<a href='", school_link, 
+                                            "' target='_blank'>",`School name`, "</a>")) %>%
               select(-school_link),  # Remove school_link column
             escape = FALSE,   # Allow HTML links
             options = list(pageLength = 10), 
@@ -1072,6 +1084,7 @@ output$data_table <- renderDT({
 }
 
 shinyApp(ui, server)
+
 ```
 
 
