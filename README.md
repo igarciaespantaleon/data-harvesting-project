@@ -6,24 +6,22 @@ The **Truth and Reconciliation Commission (TRC)** documented the trauma and lega
 
 ## Project Overview
 
-Web Automation & Data Retrieval:
+### Web Automation & Data Retrieval:
 
 Automate the navigation of an ArcGIS web application.
 Enable specific layers and interact with map elements.
 Extract geographic data from the displayed popups.
 Error Handling & Adaptive Scraping.
 
-Data Storage & Export:
+### Data Storage & Export:
 
 Storing the extracted data (location names, latitude, longitude) and saving the cleaned dataset in CSV format for analysis and visualization.
 
-Data visualization and analysis:
+### Data visualization and analysis:
 
-The second part of the project consists of the analysis of the scraped data through visualization. This includes a thorough cleaning and processing of the generated data tables. The plots and maps are displayed on a shiny app that allows interactivity.
+The second part of the project consists of the analysis of the scraped data through visualization. This includes a thorough cleaning and processing of the generated data tables. The plots and maps are displayed on a shiny app that allows interactivity, which can be accessed at: https://igarciaespantaleon.shinyapps.io/shiny_app/
 
-
-Required Packages:
-
+### Required Packages:
 
 library(RSelenium)    # Web automation and dynamic web scraping
 
@@ -33,7 +31,7 @@ library(rvest)        # Static web scraping (if needed)
 
 library(writexl)      # Exporting processed data to Excel/CSV
 
-Authors:
+### Authors:
 
 Rocío Galeote Ramírez and Irene García-Espantaleón Artal.
 
