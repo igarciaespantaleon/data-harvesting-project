@@ -22,15 +22,23 @@ Data visualization and analysis:
 The second part of the project consists of the analysis of the scraped data through visualization. This includes a thorough cleaning and processing of the generated data tables. The plots and maps are displayed on a shiny app that allows interactivity.
 
 
-Required Packages
+Required Packages:
 
 
 library(RSelenium)    # Web automation and dynamic web scraping
-library(tidyverse)    # Data manipulation, cleaning, and transformation
-library(rvest)        # Static web scraping (if needed)
-library(writexl)      # Exporting processed data to Excel/CSV
-Installation and Setup
 
+library(tidyverse)    # Data manipulation, cleaning, and transformation
+
+library(rvest)        # Static web scraping (if needed)
+
+library(writexl)      # Exporting processed data to Excel/CSV
+
+Authors:
+
+Rocío Galeote Ramírez and Irene García-Espantaleón Artal.
+
+
+# Installation and Setup
 
 ## 1. Install Software
 
